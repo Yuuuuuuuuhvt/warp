@@ -49,10 +49,11 @@ use crate::util::openable_file_type::{
 };
 use crate::view_components::DismissibleToast;
 use crate::workspace::auto_handoff::trigger_auto_handoff_to_cloud;
+use crate::workspace::tab_settings::NewTabPlacement;
 use crate::workspace::util::PaneViewLocator;
 use crate::workspace::{
-    AutoCloudHandoffTrigger, ToastStack, Workspace, WorkspaceAction, WorkspaceRegistry,
-    active_terminal_in_window,
+    AutoCloudHandoffTrigger, TabInsertOptions, ToastStack, Workspace, WorkspaceAction,
+    WorkspaceRegistry, active_terminal_in_window,
 };
 use crate::{
     ChannelState, OpenPath, quake_mode_window_id, quake_mode_window_is_open, safe_info,
@@ -819,10 +820,21 @@ fn find_matching_config_name<'a>(
 /// - When `?new_window=true` (or no Warp window is open) the tab config opens
 ///   in a brand-new window. Otherwise it opens as a new tab in the active
 ///   window.
+/// - `?activate=false` inserts the tab without switching to it, so the tab the
+///   user is typing in keeps keyboard focus.
+/// - `?placement=after_current_tab` or `?placement=after_all_tabs` overrides
+///   the `new_tab_placement` setting for this tab.
 fn handle_tab_config_uri(primary_window_id: Option<WindowId>, url: &Url, ctx: &mut AppContext) {
     let Some(desired) = get_launch_config_path(url.path()) else {
         log::warn!("couldn't turn tab config link '{}' into name", url.path());
         return;
+    };
+    let options = match parse_tab_config_insert_options(url) {
+        Ok(options) => options,
+        Err(err) => {
+            log::warn!("ignoring tab config link '{url}': {err}");
+            return;
+        }
     };
 
     let (configs, _errors) = load_tab_configs(&tab_configs_dir());
@@ -835,10 +847,15 @@ fn handle_tab_config_uri(primary_window_id: Option<WindowId>, url: &Url, ctx: &m
         .query_pairs()
         .any(|(k, v)| k == "new_window" && matches!(v.as_ref(), "1" | "true"));
 
+    // While Warp is in the background there is no active window, and the primary window fallback
+    // may not host a workspace, so look for the frontmost window that does before opening a new one.
     let target_window_id = if force_new_window {
         None
     } else {
-        primary_window_id.filter(|id| WorkspaceRegistry::as_ref(ctx).get(*id, ctx).is_some())
+        primary_window_id
+            .into_iter()
+            .chain(ctx.windows().ordered_window_ids())
+            .find(|id| WorkspaceRegistry::as_ref(ctx).get(*id, ctx).is_some())
     };
 
     let workspace = match target_window_id {
@@ -858,8 +875,34 @@ fn handle_tab_config_uri(primary_window_id: Option<WindowId>, url: &Url, ctx: &m
     };
 
     workspace.update(ctx, |workspace, ctx| {
-        workspace.open_tab_config(config, ctx);
+        workspace.open_tab_config_with_options(config, options, ctx);
     });
+}
+
+/// Parses the tab insertion query parameters of a tab config link. Unknown values are rejected
+/// rather than ignored, so a typo cannot turn a background request into a focus-stealing tab.
+fn parse_tab_config_insert_options(url: &Url) -> Result<TabInsertOptions> {
+    let mut options = TabInsertOptions::default();
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "activate" => {
+                options.activate = match value.as_ref() {
+                    "1" | "true" => true,
+                    "0" | "false" => false,
+                    other => return Err(anyhow!("invalid `activate` value '{other}'")),
+                };
+            }
+            "placement" => {
+                options.placement = Some(match value.as_ref() {
+                    "after_current_tab" => NewTabPlacement::AfterCurrentTab,
+                    "after_all_tabs" => NewTabPlacement::AfterAllTabs,
+                    other => return Err(anyhow!("invalid `placement` value '{other}'")),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(options)
 }
 
 /// Case-insensitive match against each tab config's file stem. Tab config

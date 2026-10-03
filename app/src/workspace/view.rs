@@ -1042,6 +1042,25 @@ enum TabBarSlot {
     },
 }
 
+/// How a programmatically opened tab joins the tab bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabInsertOptions {
+    /// Whether the new tab becomes the active, focused tab. A background tab leaves the active
+    /// tab, its keyboard focus and the window title unchanged.
+    pub activate: bool,
+    /// Overrides the `new_tab_placement` setting for this tab.
+    pub placement: Option<NewTabPlacement>,
+}
+
+impl Default for TabInsertOptions {
+    fn default() -> Self {
+        Self {
+            activate: true,
+            placement: None,
+        }
+    }
+}
+
 pub struct Workspace {
     window_id: WindowId,
     pub(crate) tabs: Vec<TabData>,
@@ -7315,20 +7334,36 @@ impl Workspace {
         worktree_branch_name: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.insert_tab_config(
+            tab_config,
+            param_values,
+            worktree_branch_name,
+            TabInsertOptions::default(),
+            ctx,
+        );
+    }
+
+    fn insert_tab_config(
+        &mut self,
+        tab_config: crate::tab_configs::TabConfig,
+        param_values: HashMap<String, String>,
+        worktree_branch_name: Option<&str>,
+        options: TabInsertOptions,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let tab_color = tab_config.color;
         let (rendered_title, pane_template) =
             crate::tab_configs::render_tab_config(&tab_config, &param_values, worktree_branch_name);
-        self.add_tab_with_pane_layout(
+        let index = self.insert_tab_with_pane_layout(
             PanesLayout::Template(pane_template),
             Arc::new(HashMap::new()),
             rendered_title,
+            options,
             ctx,
         );
-        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
-            // Apply tab color if specified, matching the launch config pattern.
-            if let Some(color) = tab_color {
-                tab.selected_color = SelectedTabColor::Color(color);
-            }
+        // Apply tab color if specified, matching the launch config pattern.
+        if let Some(color) = tab_color {
+            self.tabs[index].selected_color = SelectedTabColor::Color(color);
         }
     }
 
@@ -7339,14 +7374,27 @@ impl Workspace {
         tab_config: crate::tab_configs::TabConfig,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.open_tab_config_with_options(tab_config, TabInsertOptions::default(), ctx);
+    }
+
+    /// Opens a tab config like [`Self::open_tab_config`], inserting its tab according to
+    /// `options`. The param-fill modal ignores `options.placement`, and a config with parameters
+    /// is not opened when `options.activate` is false, because the modal would take focus.
+    pub(crate) fn open_tab_config_with_options(
+        &mut self,
+        tab_config: crate::tab_configs::TabConfig,
+        options: TabInsertOptions,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if tab_config.params.is_empty() {
             let is_worktree_config = tab_config.is_worktree();
             let worktree_branch_name = self.maybe_generate_worktree_name(&tab_config);
             let param_values = tab_config.default_param_values();
-            self.open_tab_config_with_params(
+            self.insert_tab_config(
                 tab_config,
                 param_values,
                 worktree_branch_name.as_deref(),
+                options,
                 ctx,
             );
             send_telemetry_from_ctx!(
@@ -7355,6 +7403,11 @@ impl Workspace {
                     is_worktree_config,
                 },
                 ctx
+            );
+        } else if !options.activate {
+            log::warn!(
+                "not opening tab config '{}' in the background because it has parameters",
+                tab_config.name
             );
         } else {
             // Pass the active terminal's cwd to seed the branch picker's git lookup.
@@ -12998,6 +13051,10 @@ impl Workspace {
     ///   there is always a way to open a top-level tab even when every tab is
     ///   grouped.
     fn new_tab_index_and_group(&self, ctx: &AppContext) -> (usize, Option<TabGroupId>) {
+        self.tab_index_and_group_for(TabSettings::as_ref(ctx).new_tab_placement)
+    }
+
+    fn tab_index_and_group_for(&self, placement: NewTabPlacement) -> (usize, Option<TabGroupId>) {
         let active_group_id = if FeatureFlag::GroupedTabs.is_enabled() {
             self.tabs
                 .get(self.active_tab_index)
@@ -13006,7 +13063,7 @@ impl Workspace {
             None
         };
 
-        match TabSettings::as_ref(ctx).new_tab_placement {
+        match placement {
             // End of the bar, outside any group.
             NewTabPlacement::AfterAllTabs => (self.tab_count(), None),
             NewTabPlacement::AfterCurrentTab => {
@@ -13031,6 +13088,27 @@ impl Workspace {
         custom_tab_title: Option<String>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.insert_tab_with_pane_layout(
+            panes_layout,
+            block_lists,
+            custom_tab_title,
+            TabInsertOptions::default(),
+            ctx,
+        );
+    }
+
+    /// Inserts a tab built from `panes_layout` and returns its index.
+    fn insert_tab_with_pane_layout(
+        &mut self,
+        panes_layout: PanesLayout,
+        block_lists: Arc<HashMap<PaneUuid, Vec<SerializedBlockListItem>>>,
+        custom_tab_title: Option<String>,
+        options: TabInsertOptions,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        // A window always needs an active tab, so the first tab is activated regardless.
+        let activate = options.activate || self.tabs.is_empty();
+
         // Remember whether the left panel was open on the current active pane group
         // before creating a new active pane group.
         let left_panel_was_open = if self.tabs.is_empty() {
@@ -13074,17 +13152,24 @@ impl Workspace {
         let (insert_idx, inherited_group_id) = if self.tab_count() == 0 {
             (0, None)
         } else {
-            self.new_tab_index_and_group(ctx)
+            match options.placement {
+                Some(placement) => self.tab_index_and_group_for(placement),
+                None => self.new_tab_index_and_group(ctx),
+            }
         };
         self.tabs.insert(insert_idx, TabData::new(new_pane_group));
         self.tab_mru_order
             .push(self.tabs[insert_idx].pane_group.id());
-        self.activate_tab_internal(insert_idx, ctx);
+        if activate {
+            self.activate_tab_internal(insert_idx, ctx);
+        } else if insert_idx <= self.active_tab_index {
+            // The insertion shifted the active tab one slot to the right.
+            self.active_tab_index += 1;
+        }
 
         // Inherit the active tab's group membership (skipped for top-level tabs).
         if let Some(group_id) = inherited_group_id {
-            let new_idx = self.active_tab_index;
-            if let Some(new_tab) = self.tabs.get_mut(new_idx) {
+            if let Some(new_tab) = self.tabs.get_mut(insert_idx) {
                 new_tab.group_id = Some(group_id);
             }
             self.expand_tab_group(group_id, ctx);
@@ -13094,7 +13179,7 @@ impl Workspace {
             if *TabSettings::as_ref(ctx).preserve_active_tab_color.value()
                 && let Some(SelectedTabColor::Color(color)) = active_tab_selected_color
             {
-                self.tabs[self.active_tab_index].selected_color = SelectedTabColor::Color(color);
+                self.tabs[insert_idx].selected_color = SelectedTabColor::Color(color);
             }
 
             // preserve the current tab's default directory color when the new tab inherits the working directory
@@ -13106,7 +13191,7 @@ impl Workspace {
                     || wd_config.config_for_source(NewSessionSource::Window).mode
                         == WorkingDirectoryMode::PreviousDir;
                 if inherits_cwd && let Some(color) = active_tab_default_color {
-                    self.tabs[self.active_tab_index].default_directory_color = Some(color);
+                    self.tabs[insert_idx].default_directory_color = Some(color);
                 }
             }
         }
@@ -13117,10 +13202,15 @@ impl Workspace {
             && !is_restoration
             && left_panel_was_open
         {
-            self.active_tab_pane_group().update(ctx, |pg, ctx| {
+            self.tabs[insert_idx].pane_group.update(ctx, |pg, ctx| {
                 pg.set_left_panel_open(true, ctx);
             });
         }
+
+        if !activate {
+            ctx.notify();
+        }
+        insert_idx
     }
 
     pub fn add_tab_from_existing_pane(

@@ -4018,6 +4018,139 @@ fn test_open_tab_config_with_params_uses_explicit_title_template() {
         });
     });
 }
+
+fn titled_tab_config(title: &str) -> crate::tab_configs::TabConfig {
+    crate::tab_configs::TabConfig {
+        name: title.to_string(),
+        title: Some(title.to_string()),
+        color: None,
+        panes: vec![TabConfigPaneNode {
+            id: "main".to_string(),
+            pane_type: Some(TabConfigPaneType::Terminal),
+            split: None,
+            children: None,
+            is_focused: Some(true),
+            directory: None,
+            commands: None,
+            shell: None,
+        }],
+        params: HashMap::new(),
+        source_path: None,
+    }
+}
+
+#[test]
+fn test_open_tab_config_in_background_keeps_active_tab() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config(titled_tab_config("second"), ctx);
+            workspace.activate_tab(0, ctx);
+        });
+        let active_before =
+            workspace.read(&app, |workspace, _| workspace.active_tab_pane_group().id());
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config_with_options(
+                titled_tab_config("background"),
+                TabInsertOptions {
+                    activate: false,
+                    placement: Some(NewTabPlacement::AfterAllTabs),
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.tab_count(), 3);
+            assert_eq!(workspace.active_tab_index, 0);
+            assert_eq!(workspace.active_tab_pane_group().id(), active_before);
+            assert_eq!(
+                workspace.tabs[2].pane_group.as_ref(ctx).custom_title(ctx),
+                Some("background".to_string())
+            );
+        });
+    });
+}
+
+#[test]
+fn test_open_tab_config_in_background_follows_placement_setting_by_default() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config(titled_tab_config("second"), ctx);
+            workspace.activate_tab(0, ctx);
+        });
+        let expected_index = workspace.read(&app, |workspace, ctx| {
+            workspace.new_tab_index_and_group(ctx).0
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config_with_options(
+                titled_tab_config("background"),
+                TabInsertOptions {
+                    activate: false,
+                    placement: None,
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(workspace.active_tab_index, 0);
+            assert_eq!(
+                workspace.tabs[expected_index]
+                    .pane_group
+                    .as_ref(ctx)
+                    .custom_title(ctx),
+                Some("background".to_string())
+            );
+        });
+    });
+}
+
+#[test]
+fn test_open_tab_config_in_background_skips_config_with_params() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let mut tab_config = titled_tab_config("needs input");
+        tab_config.params.insert(
+            "branch".to_string(),
+            crate::tab_configs::TabConfigParam {
+                description: None,
+                default: None,
+                param_type: crate::tab_configs::TabConfigParamType::Text,
+            },
+        );
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config_with_options(
+                tab_config,
+                TabInsertOptions {
+                    activate: false,
+                    placement: None,
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(workspace.tab_count(), 1);
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_tab_config_params_modal_open
+            );
+        });
+    });
+}
+
 #[test]
 fn test_toggle_tab_configs_menu_does_not_change_vertical_tabs_panel_in_horizontal_mode() {
     let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);

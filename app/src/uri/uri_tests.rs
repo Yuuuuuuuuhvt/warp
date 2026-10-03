@@ -37,6 +37,32 @@ fn test_find_matching_config() {
 }
 
 #[test]
+fn test_parse_tab_config_insert_options() {
+    let parse = |link: &str| parse_tab_config_insert_options(&Url::parse(link).unwrap());
+
+    assert_eq!(
+        parse("warp://tab_config/agent").unwrap(),
+        TabInsertOptions::default()
+    );
+    assert_eq!(
+        parse("warp://tab_config/agent?activate=false&placement=after_all_tabs").unwrap(),
+        TabInsertOptions {
+            activate: false,
+            placement: Some(NewTabPlacement::AfterAllTabs),
+        }
+    );
+    assert_eq!(
+        parse("warp://tab_config/agent?activate=1&placement=after_current_tab").unwrap(),
+        TabInsertOptions {
+            activate: true,
+            placement: Some(NewTabPlacement::AfterCurrentTab),
+        }
+    );
+    assert!(parse("warp://tab_config/agent?activate=no").is_err());
+    assert!(parse("warp://tab_config/agent?placement=first").is_err());
+}
+
+#[test]
 fn test_find_matching_config_with_spaces() {
     let mut configs: Vec<LaunchConfig> = vec![];
     for i in 0..3 {

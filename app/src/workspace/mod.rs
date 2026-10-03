@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 pub use util::{PaneViewLocator, TabMovement, active_terminal_in_window};
 pub use view::{
     NEW_SESSION_MENU_BUTTON_POSITION_ID, NEW_TAB_BUTTON_POSITION_ID, PANEL_HEADER_HEIGHT,
-    TAB_BAR_HEIGHT, TOTAL_TAB_BAR_HEIGHT, WORKSPACE_PADDING, Workspace,
+    TAB_BAR_HEIGHT, TOTAL_TAB_BAR_HEIGHT, TabInsertOptions, WORKSPACE_PADDING, Workspace,
 };
 use warp_core::context_flag::ContextFlag;
 use warpui::AppContext;
