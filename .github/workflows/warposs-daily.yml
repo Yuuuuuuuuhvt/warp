@@ -1,0 +1,132 @@
+# Builds WarpOss from upstream warpdotdev/warp master with the patches in patches/ applied,
+# signs it with the self-managed code signing identity and publishes it as a GitHub release.
+# A conflicting patch or failed build fails the run; machines keep the previous release.
+name: WarpOss daily build
+
+on:
+  schedule:
+    # 18:00 UTC is 02:00 in Asia/Shanghai, outside working hours.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if the upstream commit already has a release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warposs-daily
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 345
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNING_IDENTITY: WarpOss Local Code Signing
+      # Root certificate hash in the designated requirement; it must stay stable so macOS keeps
+      # the permissions it granted to earlier builds.
+      SIGNING_ROOT_SHA1: fb0d3d71554fa3f88f60a503366754b5dbdaa786
+    steps:
+      - name: Check out patches
+        uses: actions/checkout@v5
+        with:
+          path: self-build
+
+      - name: Resolve upstream commit
+        id: upstream
+        run: |
+          sha=$(git ls-remote https://github.com/warpdotdev/warp.git refs/heads/master | cut -f1)
+          tag="warposs-$(date -u +%Y%m%d)-${sha:0:9}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.force }}" != "true" ]] && \
+             gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+               --jq '.[].tagName' | grep -q -- "-${sha:0:9}$"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream ${sha:0:9} already has a release; nothing to build."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out upstream
+        if: steps.upstream.outputs.skip == 'false'
+        uses: actions/checkout@v5
+        with:
+          repository: warpdotdev/warp
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: warp
+          lfs: true
+
+      - name: Apply patches
+        if: steps.upstream.outputs.skip == 'false'
+        working-directory: warp
+        run: |
+          git config user.name "WarpOss daily build"
+          git config user.email "warposs-build@users.noreply.github.com"
+          git am --3way ../self-build/patches/*.patch
+
+      - name: Install toolchains
+        if: steps.upstream.outputs.skip == 'false'
+        working-directory: warp
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          # Installs the toolchain pinned by rust-toolchain.toml.
+          rustup toolchain install
+          brew install protobuf create-dmg
+          script/install_cargo_bundle
+          script/install_cargo_release_deps
+
+      - name: Restore Rust cache
+        if: steps.upstream.outputs.skip == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: warp
+          key: warposs-release
+
+      - name: Build WarpOss
+        if: steps.upstream.outputs.skip == 'false'
+        working-directory: warp
+        run: ./script/macos/bundle --channel oss --nouniversal --nosign
+
+      - name: Sign WarpOss
+        if: steps.upstream.outputs.skip == 'false'
+        working-directory: warp
+        env:
+          P12_BASE64: ${{ secrets.WARP_CODESIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.WARP_CODESIGN_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/warposs-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "$P12_BASE64" | base64 -d > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/signing.p12"
+          app=target/release-lto/bundle/osx/WarpOss.app
+          codesign --force --deep --options runtime --keychain "$keychain" --sign "$SIGNING_IDENTITY" \
+            --entitlements script/Debug-Entitlements.plist "$app"
+          codesign --verify --deep --strict "$app"
+          codesign -d -r- "$app" 2>&1 | grep -q "certificate root = H\"$SIGNING_ROOT_SHA1\""
+          security delete-keychain "$keychain"
+
+      - name: Publish release
+        if: steps.upstream.outputs.skip == 'false'
+        working-directory: warp
+        run: |
+          cd target/release-lto/bundle/osx
+          ditto -c -k --keepParent WarpOss.app WarpOss.zip
+          shasum -a 256 WarpOss.zip > WarpOss.zip.sha256
+          gh release create "${{ steps.upstream.outputs.tag }}" WarpOss.zip WarpOss.zip.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target self-build \
+            --title "WarpOss ${{ steps.upstream.outputs.tag }}" \
+            --notes "Built from warpdotdev/warp@${{ steps.upstream.outputs.sha }} with patches/ from self-build@${GITHUB_SHA}."
