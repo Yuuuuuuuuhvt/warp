@@ -23,14 +23,33 @@ makes the window jump in fullscreen.
 ## Daily build
 
 `.github/workflows/warposs-daily.yml` runs at 02:00 Asia/Shanghai and can be started manually.
-It checks out `main`, merges upstream `master`, runs the workspace and URI tests, builds the OSS
-channel app and signs it with a self-signed code signing identity. Only then does it push the
-merged `main` and publish `WarpOss.zip` with its SHA-256 as a release tagged
-`warposs-<date>-<main sha>`. A run is skipped when the merged `main` already has a release.
+It has four jobs:
 
-A merge conflict or a failing test or build stops the run before anything is pushed; GitHub emails
-the failure and machines keep the previous release. Resolve a conflict by merging upstream `master`
-into `main` locally, running the tests and pushing `main`, then start the workflow manually.
+1. `prepare` pins the current `main` and upstream `master` commits, merges them, and decides which
+   platforms still lack an artifact in the release of the merged commit.
+2. `macos` rebuilds the same merge, runs the workspace and URI tests, builds the OSS channel app and
+   signs it with a self-signed code signing identity.
+3. `linux` rebuilds the same merge on Ubuntu with upstream's Linux build script, then assembles an
+   Arch package `warp-terminal-oss-<date>.<main commit count>-1-x86_64.pkg.tar.zst` in an
+   `archlinux:base-devel` container, because `makepkg` only exists on Arch. The package is not
+   signed and the Linux job does not run the tests, which `macos` already ran on the same commit.
+4. `publish` runs when at least one platform built. It pushes the merged `main`, then creates the
+   release `warposs-<date>-<main sha>` or adds the missing artifacts to it: `WarpOss.zip`, the
+   Arch package and a SHA-256 file for each.
+
+The platforms are independent. A failure on one does not stop the other from being published, and
+the next run builds the missing platform for the same `main` commit and adds it to the existing
+release. A merge conflict stops the run in `prepare`, before anything is built or pushed. Only
+`publish` pushes `main`, so `main` always points at a commit that has a release.
+
+Every job rebuilds the merge commit from the pinned parents and dates and fails if its hash differs
+from the one `prepare` produced, so both platforms are built from one commit even though the merge
+is pushed only after the builds.
+
+A failing test or build fails the run; GitHub emails the failure and machines keep the previous
+release. Resolve a conflict by merging upstream `master` into `main` locally, running the tests and
+pushing `main`, then start the workflow manually. The `force` input rebuilds both platforms and
+replaces the artifacts of an existing release.
 
 ## Developing a change
 
