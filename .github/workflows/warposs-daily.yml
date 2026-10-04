@@ -1,16 +1,17 @@
-# Builds WarpOss from upstream warpdotdev/warp master with the patches in patches/ applied,
-# signs it with the self-managed code signing identity and publishes it as a GitHub release.
-# A conflicting patch or failed build fails the run; machines keep the previous release.
+# Merges upstream warpdotdev/warp master into this fork's main, tests and builds WarpOss, signs it
+# with the self-managed code signing identity, pushes the merged main and publishes a release.
+# A merge conflict or a failed test or build stops the run before anything is pushed, so main
+# always points at a commit that has a release, and machines keep the previous release.
 name: WarpOss daily build
 
 on:
   schedule:
-    # 18:00 UTC is 02:00 in Asia/Shanghai, outside working hours.
+    # 18:00 UTC is 02:00 in Asia/Shanghai; machines install the release at 07:00.
     - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: Build even if the upstream commit already has a release
+        description: Build even if the merged main already has a release
         type: boolean
         default: false
 
@@ -32,46 +33,57 @@ jobs:
       # the permissions it granted to earlier builds.
       SIGNING_ROOT_SHA1: fb0d3d71554fa3f88f60a503366754b5dbdaa786
     steps:
-      - name: Check out patches
+      # The fork is public, so main is read without a token. The sync token is handed to git only
+      # in the push step, keeping it away from the third-party build scripts that run before it.
+      - name: Check out main
         uses: actions/checkout@v5
         with:
-          path: self-build
-
-      - name: Resolve upstream commit
-        id: upstream
-        run: |
-          sha=$(git ls-remote https://github.com/warpdotdev/warp.git refs/heads/master | cut -f1)
-          tag="warposs-$(date -u +%Y%m%d)-${sha:0:9}"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [[ "${{ inputs.force }}" != "true" ]] && \
-             gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
-               --jq '.[].tagName' | grep -q -- "-${sha:0:9}$"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Upstream ${sha:0:9} already has a release; nothing to build."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out upstream
-        if: steps.upstream.outputs.skip == 'false'
-        uses: actions/checkout@v5
-        with:
-          repository: warpdotdev/warp
-          ref: ${{ steps.upstream.outputs.sha }}
+          ref: main
           path: warp
-          lfs: true
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
 
-      - name: Apply patches
-        if: steps.upstream.outputs.skip == 'false'
+      - name: Merge upstream master
+        id: merge
         working-directory: warp
         run: |
           git config user.name "WarpOss daily build"
           git config user.email "warposs-build@users.noreply.github.com"
-          git am --3way ../self-build/patches/*.patch
+          git remote add upstream https://github.com/warpdotdev/warp.git
+          git fetch --filter=blob:none upstream master
+          before=$(git rev-parse HEAD)
+          if ! git merge --no-edit upstream/master; then
+            git merge --abort
+            echo "::error::upstream master conflicts with main; merge it locally and push main"
+            exit 1
+          fi
+          head=$(git rev-parse HEAD)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git rev-parse upstream/master)" >> "$GITHUB_OUTPUT"
+          echo "tag=warposs-$(date -u +%Y%m%d)-${head:0:9}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.force }}" != "true" ]] && \
+             gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+               --jq '.[].tagName' | grep -q -- "-${head:0:9}$"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "main ${head:0:9} already has a release; nothing to build."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The embedded input classifier models are Git LFS objects. They come from upstream's LFS
+      # storage so the daily build does not spend the fork's LFS bandwidth quota.
+      - name: Fetch LFS models
+        if: steps.merge.outputs.skip == 'false'
+        working-directory: warp
+        run: |
+          git lfs install --local
+          git lfs fetch upstream --include="crates/input_classifier/models/**"
+          git lfs checkout
 
       - name: Install toolchains
-        if: steps.upstream.outputs.skip == 'false'
+        if: steps.merge.outputs.skip == 'false'
         working-directory: warp
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
@@ -84,19 +96,27 @@ jobs:
           script/install_cargo_release_deps
 
       - name: Restore Rust cache
-        if: steps.upstream.outputs.skip == 'false'
+        if: steps.merge.outputs.skip == 'false'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: warp
-          key: warposs-release
+          key: warposs
+
+      - name: Test patched behaviour
+        if: steps.merge.outputs.skip == 'false'
+        working-directory: warp
+        env:
+          WARP_LOCAL_SKIP_METAL: "1"
+        run: |
+          cargo test -p warp --lib -- workspace:: uri::
 
       - name: Build WarpOss
-        if: steps.upstream.outputs.skip == 'false'
+        if: steps.merge.outputs.skip == 'false'
         working-directory: warp
         run: ./script/macos/bundle --channel oss --nouniversal --nosign
 
       - name: Sign WarpOss
-        if: steps.upstream.outputs.skip == 'false'
+        if: steps.merge.outputs.skip == 'false'
         working-directory: warp
         env:
           P12_BASE64: ${{ secrets.WARP_CODESIGN_P12_BASE64 }}
@@ -119,14 +139,26 @@ jobs:
           codesign -d -r- "$app" 2>&1 | grep -q "certificate root = H\"$SIGNING_ROOT_SHA1\""
           security delete-keychain "$keychain"
 
+      # Merging upstream brings in upstream's workflow file changes, which GITHUB_TOKEN may never
+      # push, so the merged main is pushed with the fine-grained sync token. LFS objects stay in
+      # upstream's storage; the fork does not need copies of them.
+      - name: Push merged main
+        if: steps.merge.outputs.skip == 'false' && steps.merge.outputs.head != steps.merge.outputs.before
+        working-directory: warp
+        env:
+          SYNC_TOKEN: ${{ secrets.WARPOSS_SYNC_TOKEN }}
+          GIT_LFS_SKIP_PUSH: "1"
+        run: |
+          git push "https://x-access-token:${SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+
       - name: Publish release
-        if: steps.upstream.outputs.skip == 'false'
+        if: steps.merge.outputs.skip == 'false'
         working-directory: warp
         run: |
           cd target/release-lto/bundle/osx
           ditto -c -k --keepParent WarpOss.app WarpOss.zip
           shasum -a 256 WarpOss.zip > WarpOss.zip.sha256
-          gh release create "${{ steps.upstream.outputs.tag }}" WarpOss.zip WarpOss.zip.sha256 \
-            --repo "$GITHUB_REPOSITORY" --target self-build \
-            --title "WarpOss ${{ steps.upstream.outputs.tag }}" \
-            --notes "Built from warpdotdev/warp@${{ steps.upstream.outputs.sha }} with patches/ from self-build@${GITHUB_SHA}."
+          gh release create "${{ steps.merge.outputs.tag }}" WarpOss.zip WarpOss.zip.sha256 \
+            --repo "$GITHUB_REPOSITORY" --target main \
+            --title "WarpOss ${{ steps.merge.outputs.tag }}" \
+            --notes "Built from main@${{ steps.merge.outputs.head }}, which merges warpdotdev/warp@${{ steps.merge.outputs.upstream }}."
