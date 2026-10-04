@@ -277,8 +277,9 @@ jobs:
               echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
               # bundle_arch archives the staged files with tar, which would record the builder
               # uid as their owner, and that uid belongs to no user on the machines that install
-              # the package. A tar wrapper makes the archive, and so the package, owned by root.
-              printf "#!/bin/sh\nexec /usr/bin/tar --owner=0 --group=0 --numeric-owner \"\$@\"\n" \
+              # the package. A tar wrapper makes the archive, and so the package, owned by root. The options
+              # follow the arguments because bundle_arch passes old-style mode letters first.
+              printf "#!/bin/sh\nexec /usr/bin/tar \"\$@\" --owner=0 --group=0 --numeric-owner\n" \
                 > /usr/local/bin/tar
               chmod +x /usr/local/bin/tar
               # bundle_arch passes --noconfirm to makepkg when it sees GITHUB_ACTIONS; its
