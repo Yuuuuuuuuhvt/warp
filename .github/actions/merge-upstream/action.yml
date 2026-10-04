@@ -1,0 +1,64 @@
+# Checks out main at a fixed commit and merges a fixed upstream commit into it.
+#
+# The prepare, build and publish jobs each need the same merged commit, but the merge is pushed
+# only after a build succeeds. Pinning both parents and the commit dates makes every job produce a
+# merge commit with the identical hash, so the jobs can build different platforms from one commit.
+name: Merge upstream into main
+inputs:
+  main:
+    description: Commit of the fork's main to merge into
+    required: true
+  upstream:
+    description: Commit of upstream master to merge
+    required: true
+  date:
+    description: Unix time used as author and committer date of the merge commit
+    required: true
+  expected-head:
+    description: Merge commit the other jobs produced; a different result fails the job
+    default: ""
+outputs:
+  head:
+    description: Commit that main points to after the merge
+    value: ${{ steps.merge.outputs.head }}
+
+runs:
+  using: composite
+  steps:
+    # The fork is public, so main is read without a token. The sync token is handed to git only
+    # in the push step, keeping it away from the third-party build scripts that run before it.
+    - name: Check out main
+      uses: actions/checkout@v5
+      with:
+        ref: ${{ inputs.main }}
+        path: warp
+        fetch-depth: 0
+        filter: blob:none
+        persist-credentials: false
+
+    - name: Merge upstream master
+      id: merge
+      shell: bash
+      working-directory: warp
+      env:
+        MAIN: ${{ inputs.main }}
+        UPSTREAM: ${{ inputs.upstream }}
+        EXPECTED_HEAD: ${{ inputs.expected-head }}
+        GIT_AUTHOR_DATE: "@${{ inputs.date }} +0000"
+        GIT_COMMITTER_DATE: "@${{ inputs.date }} +0000"
+      run: |
+        git config user.name "WarpOss daily build"
+        git config user.email "warposs-build@users.noreply.github.com"
+        git remote add upstream https://github.com/warpdotdev/warp.git
+        git fetch --filter=blob:none upstream "$UPSTREAM"
+        if ! git merge --no-edit "$UPSTREAM"; then
+          git merge --abort
+          echo "::error::upstream master conflicts with main; merge it locally and push main"
+          exit 1
+        fi
+        head=$(git rev-parse HEAD)
+        if [[ -n "$EXPECTED_HEAD" && "$head" != "$EXPECTED_HEAD" ]]; then
+          echo "::error::merged to $head, but the prepare job produced $EXPECTED_HEAD"
+          exit 1
+        fi
+        echo "head=$head" >> "$GITHUB_OUTPUT"
