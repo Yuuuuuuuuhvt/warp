@@ -275,6 +275,12 @@ jobs:
               pacman -Syu --noconfirm sudo
               useradd -m -u "$RUNNER_UID" builder
               echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+              # bundle_arch archives the staged files with tar, which would record the builder
+              # uid as their owner, and that uid belongs to no user on the machines that install
+              # the package. A tar wrapper makes the archive, and so the package, owned by root.
+              printf "#!/bin/sh\nexec /usr/bin/tar --owner=0 --group=0 --numeric-owner \"\$@\"\n" \
+                > /usr/local/bin/tar
+              chmod +x /usr/local/bin/tar
               # bundle_arch passes --noconfirm to makepkg when it sees GITHUB_ACTIONS; its
               # GITHUB_OUTPUT writes are discarded.
               sudo -u builder env GITHUB_ACTIONS=true GITHUB_OUTPUT=/dev/null \
@@ -286,6 +292,8 @@ jobs:
           cd target/release-lto/bundle/linux
           ls -l
           package=$(ls warp-terminal-oss-*.pkg.tar.zst)
+          # Fail the build if any packaged file is not owned by root.
+          ! tar --zstd -tvf "$package" | awk '$2 != "root/root"' | grep -q .
           sha256sum "$package" > "$package.sha256"
 
       - name: Upload artifacts
