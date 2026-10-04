@@ -241,8 +241,11 @@ jobs:
         run: |
           script/linux/install_build_deps
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
           # Installs the toolchain pinned by rust-toolchain.toml.
-          "$HOME/.cargo/bin/rustup" toolchain install
+          rustup toolchain install
+          # cargo-about generates the third-party license file that goes into the package.
+          script/install_cargo_release_deps --no-build-deps
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
@@ -264,7 +267,10 @@ jobs:
         run: |
           # makepkg refuses to run as root, so the container builds as a user with the runner's
           # uid, which keeps the files it writes under target/ removable by later steps.
+          # Bundling runs cargo about, so the runner's Rust installation is mounted at the same
+          # path; its binaries run on Arch because Arch's glibc is newer than Ubuntu's.
           docker run --rm -v "$PWD:/work" -w /work -e VERSION -e RUNNER_UID="$(id -u)" \
+            -v "$HOME/.cargo:$HOME/.cargo" -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
             archlinux:base-devel bash -euxc '
               pacman -Syu --noconfirm sudo
               useradd -m -u "$RUNNER_UID" builder
@@ -272,6 +278,8 @@ jobs:
               # bundle_arch passes --noconfirm to makepkg when it sees GITHUB_ACTIONS; its
               # GITHUB_OUTPUT writes are discarded.
               sudo -u builder env GITHUB_ACTIONS=true GITHUB_OUTPUT=/dev/null \
+                CARGO_HOME="$HOST_HOME/.cargo" RUSTUP_HOME="$HOST_HOME/.rustup" \
+                PATH="$HOST_HOME/.cargo/bin:$PATH" \
                 SETTINGS_SCHEMA_SOURCE=/work/target/release-lto/settings_schema.json \
                 script/linux/bundle --skip-build --channel oss --packages arch --release-tag "$VERSION"
             '
