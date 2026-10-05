@@ -3041,6 +3041,7 @@ impl PaneGroup {
         server_api: Arc<ServerApi>,
         model_event_sender: Option<SyncSender<ModelEvent>>,
         initial_layout_callback: InitialLayoutCallback,
+        focus_on_creation: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let windowing_state = WindowManager::handle(ctx);
@@ -3206,7 +3207,7 @@ impl PaneGroup {
 
         // Notify any restored panes that they belong to this pane group.
         pane_group.reattach_panes(ctx);
-        if FeatureFlag::DragTabsToWindows.is_enabled() {
+        if focus_on_creation && FeatureFlag::DragTabsToWindows.is_enabled() {
             pane_group.focus(ctx);
         }
         ctx.notify();
@@ -3423,6 +3424,10 @@ impl PaneGroup {
 
     /// Constructs a new [`PaneGroup`] with a layout that adheres
     /// to the specification of the provided [`PanesLayout`].
+    ///
+    /// `focus_on_creation` must be false for a pane group that is inserted behind the active tab.
+    /// The window has a single focused view, so a hidden pane group that focuses itself would take
+    /// the keyboard away from the tab the user is typing in.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_panes_layout(
         tips_completed: ModelHandle<TipsCompleted>,
@@ -3431,6 +3436,7 @@ impl PaneGroup {
         panes_layout: PanesLayout,
         block_lists: Arc<HashMap<PaneUuid, Vec<SerializedBlockListItem>>>,
         model_event_sender: Option<SyncSender<ModelEvent>>,
+        focus_on_creation: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let unsupported_banner_model_handle =
@@ -3518,6 +3524,7 @@ impl PaneGroup {
             server_api,
             model_event_sender.clone(),
             Box::new(initial_layout),
+            focus_on_creation,
             ctx,
         );
 
@@ -3560,6 +3567,7 @@ impl PaneGroup {
             server_api,
             model_event_sender,
             Box::new(initial_layout),
+            true,
             ctx,
         )
     }
@@ -3608,6 +3616,7 @@ impl PaneGroup {
             server_api,
             model_event_sender,
             Box::new(initial_layout),
+            true,
             ctx,
         )
     }
@@ -3652,6 +3661,7 @@ impl PaneGroup {
             server_api,
             model_event_sender,
             Box::new(initial_layout),
+            true,
             ctx,
         )
     }
@@ -3699,6 +3709,7 @@ impl PaneGroup {
             server_api,
             model_event_sender,
             Box::new(initial_layout),
+            true,
             ctx,
         )
     }
@@ -5253,8 +5264,14 @@ impl PaneGroup {
             .unwrap_or_default()
     }
 
-    pub fn set_title(&mut self, title: &str, ctx: &mut ViewContext<Self>) {
+    /// Sets the custom title without moving focus. Used for a pane group that is not the active
+    /// tab yet, where refocusing the pane would take the window focus from the active tab.
+    pub fn set_title_without_refocus(&mut self, title: &str) {
         self.custom_title = Some(title.to_string()).filter(|t| !t.is_empty());
+    }
+
+    pub fn set_title(&mut self, title: &str, ctx: &mut ViewContext<Self>) {
+        self.set_title_without_refocus(title);
 
         // refocus on the focused pane
         if let Some(pane) = self.focused_pane_content(ctx) {

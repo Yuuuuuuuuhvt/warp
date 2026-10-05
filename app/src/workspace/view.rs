@@ -13143,10 +13143,13 @@ impl Workspace {
                 panes_layout,
                 block_lists,
                 self.model_event_sender.clone(),
+                activate,
                 ctx,
             );
             if let Some(title) = custom_tab_title {
-                pane_group.set_title(&title, ctx);
+                // The title is applied before the tab exists, so refocusing here would move the
+                // window focus even when the tab is inserted in the background.
+                pane_group.set_title_without_refocus(&title);
             }
             pane_group
         });

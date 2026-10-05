@@ -4076,6 +4076,74 @@ fn test_open_tab_config_in_background_keeps_active_tab() {
 }
 
 #[test]
+fn test_open_tab_config_in_background_keeps_window_focus_in_active_tab() {
+    // Release builds on macOS enable this flag, which makes a new pane group focus itself.
+    let _drag_tabs_guard = FeatureFlag::DragTabsToWindows.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.focus_active_tab(ctx);
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(
+                workspace.tabs[0].pane_group.is_self_or_child_focused(ctx),
+                "the first tab should hold the window focus before the insertion"
+            );
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config_with_options(
+                titled_tab_config("background"),
+                TabInsertOptions {
+                    activate: false,
+                    placement: Some(NewTabPlacement::AfterAllTabs),
+                },
+                ctx,
+            );
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            assert_eq!(workspace.tab_count(), 2);
+            assert!(
+                workspace.tabs[0].pane_group.is_self_or_child_focused(ctx),
+                "the active tab should keep the window focus"
+            );
+            assert!(
+                !workspace.tabs[1].pane_group.is_self_or_child_focused(ctx),
+                "a background tab must not take the window focus"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_open_tab_config_activated_takes_window_focus() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_tab_config_with_options(
+                titled_tab_config("foreground"),
+                TabInsertOptions {
+                    activate: true,
+                    placement: Some(NewTabPlacement::AfterAllTabs),
+                },
+                ctx,
+            );
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            assert_eq!(workspace.active_tab_index, 1);
+            assert!(workspace.tabs[1].pane_group.is_self_or_child_focused(ctx));
+            assert!(!workspace.tabs[0].pane_group.is_self_or_child_focused(ctx));
+        });
+    });
+}
+
+#[test]
 fn test_open_tab_config_in_background_follows_placement_setting_by_default() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);

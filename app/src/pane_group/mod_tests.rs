@@ -272,6 +272,7 @@ fn mock_pane_group(app: &mut App, options: MockOptions) -> ViewHandle<PaneGroup>
                 options.layout,
                 block_lists,
                 None,
+                true,
                 ctx,
             )
         });
@@ -3979,6 +3980,7 @@ fn test_focused_pane_is_synchronized_with_application_focus() {
                         panes_layout,
                         block_lists,
                         None,
+                        true,
                         ctx,
                     )
                 });
