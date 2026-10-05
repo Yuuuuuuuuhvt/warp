@@ -157,11 +157,14 @@ jobs:
         env:
           WARP_LOCAL_SKIP_METAL: "1"
         run: |
-          cargo test -p warp --lib -- workspace:: uri::
+          cargo test -p warp --features warp_control_cli --lib -- workspace:: uri:: local_control::
+          cargo test -p local_control
 
       - name: Build WarpOss
         working-directory: warp
-        run: ./script/macos/bundle --channel oss --nouniversal --nosign
+        # warp-agents drives WarpOss through local control (warpctrl), which upstream enables only
+        # on the dev channel. The Scripting setting still defaults to off on each machine.
+        run: ./script/macos/bundle --channel oss --nouniversal --nosign --features warp_control_cli
 
       - name: Sign WarpOss
         working-directory: warp
@@ -258,7 +261,7 @@ jobs:
       # against Ubuntu's glibc, which is older than the glibc of any current Arch system.
       - name: Build WarpOss
         working-directory: warp
-        run: script/linux/bundle --channel oss --packages ""
+        run: script/linux/bundle --channel oss --packages "" --features warp_control_cli
 
       - name: Package for Arch Linux
         working-directory: warp
