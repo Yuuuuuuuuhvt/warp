@@ -7,12 +7,12 @@ use ::local_control::protocol::{
     ThemeNameParams, WindowTarget,
 };
 use ::local_control::{ActionKind, ControlError, ErrorCode, TargetScope};
-use warpui::{AppContext, ModelContext, TypedActionView, ViewHandle, WindowId};
+use warpui::{AppContext, ModelContext, SingletonEntity, TypedActionView, ViewHandle, WindowId};
 
 use crate::local_control::LocalControlBridge;
 use crate::local_control::handlers::metadata::action_metadata_for_name;
 use crate::pane_group::{ActivationReason, PaneGroup, PaneGroupAction, PaneId};
-use crate::workspace::{Workspace, WorkspaceAction};
+use crate::workspace::{Workspace, WorkspaceAction, WorkspaceRegistry};
 
 pub(crate) fn validate_tab_create_target(target: &TargetSelector) -> Result<(), ControlError> {
     if target.tab.is_some() || target.pane.is_some() || target.session.is_some() {
@@ -22,6 +22,89 @@ pub(crate) fn validate_tab_create_target(target: &TargetSelector) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+/// Validates `tab.create` parameters. The checks run before any tab is created, so a rejected
+/// request leaves the workspace untouched.
+pub(crate) fn validate_tab_create_params(params: &TabCreateParams) -> Result<(), ControlError> {
+    if params.tab_config.is_some() && params.tab_type.is_some() {
+        return Err(ControlError::new(
+            ErrorCode::InvalidParams,
+            "tab.create accepts either tab_config or tab_type, not both",
+        ));
+    }
+    if params.tab_config.is_none() && (params.activate.is_some() || params.placement.is_some()) {
+        return Err(ControlError::new(
+            ErrorCode::InvalidParams,
+            "tab.create accepts activate and placement only together with tab_config",
+        ));
+    }
+    if let Some(name) = params.tab_config.as_deref() {
+        validate_tab_config_name(name)?;
+    }
+    Ok(())
+}
+
+/// Validates `window.create` parameters, which name a tab type and nothing else.
+pub(crate) fn validate_window_create_params(params: &TabCreateParams) -> Result<(), ControlError> {
+    if params.tab_config.is_some() || params.activate.is_some() || params.placement.is_some() {
+        return Err(ControlError::new(
+            ErrorCode::InvalidParams,
+            "window.create only accepts tab_type",
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects tab config names that are not plain file names, so a request cannot escape the tab
+/// configs directory.
+fn validate_tab_config_name(name: &str) -> Result<(), ControlError> {
+    let is_plain_name = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\');
+    if !is_plain_name {
+        return Err(ControlError::new(
+            ErrorCode::InvalidParams,
+            format!("tab.create received '{name}', which is not a plain tab config file name"),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolves the target window for a `tab.create` request.
+///
+/// A request that opens a tab config may arrive while Warp is in the background, where no window
+/// is active. Such a request falls back to the frontmost window that hosts a workspace, matching
+/// how tab config links resolve their window, and reports `missing_target` instead of opening a
+/// window when none hosts a workspace. Requests without a tab config keep the existing window
+/// selection rules.
+pub(crate) fn tab_create_window_id_for_target(
+    ctx: &mut ModelContext<LocalControlBridge>,
+    target: &TargetSelector,
+    opens_tab_config: bool,
+) -> Result<WindowId, ControlError> {
+    let needs_background_fallback = opens_tab_config
+        && matches!(target.window, None | Some(WindowTarget::Active))
+        && ctx.windows().active_window().is_none();
+    if !needs_background_fallback {
+        return target_window_id_for_target(ctx, target, ActionKind::TabCreate);
+    }
+    let window_ids = ctx.windows().ordered_window_ids();
+    window_ids
+        .into_iter()
+        .find(|window_id| {
+            WorkspaceRegistry::as_ref(ctx)
+                .get(*window_id, ctx)
+                .is_some()
+        })
+        .ok_or_else(|| {
+            ControlError::new(
+                ErrorCode::MissingTarget,
+                "tab.create found no window with a workspace to open the tab config in",
+            )
+        })
 }
 
 pub(crate) fn validate_action_params(action: &::local_control::Action) -> Result<(), ControlError> {

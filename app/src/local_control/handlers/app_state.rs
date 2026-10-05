@@ -30,6 +30,7 @@ use crate::local_control::resolver::{
     activate_target, active_target_pane_group, decode_params, focus_explicit_pane_target,
     input_target_pane_id, reject_target_families, tab_index_from_target, target_pane_group,
     target_pane_id, target_session_pane_id, target_window_id_for_target, target_workspace,
+    validate_window_create_params,
 };
 use crate::palette::PaletteMode;
 use crate::pane_group::{ActivationReason, Direction, PaneGroupAction};
@@ -238,6 +239,7 @@ fn window_create(
         "target selectors",
     )?;
     let params = decode_params::<TabCreateParams>(params)?;
+    validate_window_create_params(&params)?;
     match params.tab_type {
         None | Some(TabType::Terminal | TabType::Default) => {}
         Some(TabType::Agent | TabType::CloudAgent) => {

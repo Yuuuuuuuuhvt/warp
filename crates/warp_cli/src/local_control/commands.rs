@@ -340,6 +340,9 @@ pub(super) fn run_window_command(
             ActionKind::WindowCreate,
             TabCreateParams {
                 tab_type: args.tab_type.map(Into::into),
+                tab_config: args.tab_config,
+                activate: args.no_activate.then_some(false),
+                placement: args.placement.map(Into::into),
             },
             output_format,
         ),
@@ -368,6 +371,9 @@ pub(super) fn run_tab_command(
             ActionKind::TabCreate,
             TabCreateParams {
                 tab_type: args.tab_type.map(Into::into),
+                tab_config: args.tab_config,
+                activate: args.no_activate.then_some(false),
+                placement: args.placement.map(Into::into),
             },
             output_format,
         ),

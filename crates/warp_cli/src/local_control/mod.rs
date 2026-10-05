@@ -608,8 +608,20 @@ pub struct TargetArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct TabCreateArgs {
-    #[arg(long = "type", value_enum)]
+    #[arg(long = "type", value_enum, conflicts_with = "tab_config")]
     pub tab_type: Option<CliTabType>,
+
+    /// Open an existing tab config by file name instead of creating an empty tab.
+    #[arg(long = "tab-config", conflicts_with = "tab_type")]
+    pub tab_config: Option<String>,
+
+    /// Insert the tab without switching to it. Requires --tab-config.
+    #[arg(long = "no-activate", requires = "tab_config")]
+    pub no_activate: bool,
+
+    /// Override the new-tab placement setting. Requires --tab-config.
+    #[arg(long = "placement", value_enum, requires = "tab_config")]
+    pub placement: Option<CliTabPlacement>,
 
     #[command(flatten)]
     pub target: TargetArgs,
@@ -823,6 +835,21 @@ impl From<CliTabType> for local_control::protocol::TabType {
             CliTabType::Agent => Self::Agent,
             CliTabType::CloudAgent => Self::CloudAgent,
             CliTabType::Default => Self::Default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliTabPlacement {
+    AfterCurrentTab,
+    AfterAllTabs,
+}
+
+impl From<CliTabPlacement> for local_control::protocol::TabPlacement {
+    fn from(value: CliTabPlacement) -> Self {
+        match value {
+            CliTabPlacement::AfterCurrentTab => Self::AfterCurrentTab,
+            CliTabPlacement::AfterAllTabs => Self::AfterAllTabs,
         }
     }
 }

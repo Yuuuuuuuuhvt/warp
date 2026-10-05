@@ -38,6 +38,71 @@ fn parses_typed_create_and_setting_list_params() {
 }
 
 #[test]
+fn parses_tab_create_tab_config_flags() {
+    let args = ControlArgs::try_parse_from([
+        "warpctrl",
+        "tab",
+        "create",
+        "--tab-config",
+        "dev_setup",
+        "--no-activate",
+        "--placement",
+        "after-all-tabs",
+    ])
+    .expect("tab config create parses");
+    let ControlCommand::Tab(TabCommand::Create(args)) = args.command else {
+        panic!("expected tab create command");
+    };
+    assert_eq!(args.tab_config.as_deref(), Some("dev_setup"));
+    assert!(args.no_activate);
+    assert_eq!(args.placement, Some(CliTabPlacement::AfterAllTabs));
+    assert_eq!(args.tab_type, None);
+
+    let args = ControlArgs::try_parse_from([
+        "warpctrl",
+        "tab",
+        "create",
+        "--tab-config",
+        "dev_setup",
+        "--placement",
+        "after-current-tab",
+    ])
+    .expect("tab config create parses");
+    let ControlCommand::Tab(TabCommand::Create(args)) = args.command else {
+        panic!("expected tab create command");
+    };
+    assert!(!args.no_activate);
+    assert_eq!(args.placement, Some(CliTabPlacement::AfterCurrentTab));
+}
+
+#[test]
+fn rejects_tab_config_combined_with_tab_type() {
+    let err = ControlArgs::try_parse_from([
+        "warpctrl",
+        "tab",
+        "create",
+        "--tab-config",
+        "dev_setup",
+        "--type",
+        "agent",
+    ])
+    .expect_err("tab config and tab type conflict");
+    assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn rejects_tab_insert_options_without_tab_config() {
+    for flags in [
+        &["--no-activate"][..],
+        &["--placement", "after-all-tabs"][..],
+    ] {
+        let err = ControlArgs::try_parse_from(["warpctrl", "tab", "create"].iter().chain(flags))
+            .expect_err("insert options require a tab config");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+}
+
+#[test]
 fn rejects_conflicting_instance_selectors() {
     let err = ControlArgs::try_parse_from([
         "warpctrl",

@@ -7360,7 +7360,7 @@ impl Workspace {
         worktree_branch_name: Option<&str>,
         options: TabInsertOptions,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> usize {
         let tab_color = tab_config.color;
         let (rendered_title, pane_template) =
             crate::tab_configs::render_tab_config(&tab_config, &param_values, worktree_branch_name);
@@ -7375,6 +7375,7 @@ impl Workspace {
         if let Some(color) = tab_color {
             self.tabs[index].selected_color = SelectedTabColor::Color(color);
         }
+        index
     }
 
     /// Opens a tab config, showing the param-fill modal when the config has parameters,
@@ -7388,19 +7389,20 @@ impl Workspace {
     }
 
     /// Opens a tab config like [`Self::open_tab_config`], inserting its tab according to
-    /// `options`. The param-fill modal ignores `options.placement`, and a config with parameters
-    /// is not opened when `options.activate` is false, because the modal would take focus.
+    /// `options`, and returns the index of the inserted tab. The param-fill modal ignores
+    /// `options.placement`, and a config with parameters is not opened when `options.activate` is
+    /// false, because the modal would take focus; both cases return `None`.
     pub(crate) fn open_tab_config_with_options(
         &mut self,
         tab_config: crate::tab_configs::TabConfig,
         options: TabInsertOptions,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> Option<usize> {
         if tab_config.params.is_empty() {
             let is_worktree_config = tab_config.is_worktree();
             let worktree_branch_name = self.maybe_generate_worktree_name(&tab_config);
             let param_values = tab_config.default_param_values();
-            self.insert_tab_config(
+            let index = self.insert_tab_config(
                 tab_config,
                 param_values,
                 worktree_branch_name.as_deref(),
@@ -7414,11 +7416,13 @@ impl Workspace {
                 },
                 ctx
             );
+            Some(index)
         } else if !options.activate {
             log::warn!(
                 "not opening tab config '{}' in the background because it has parameters",
                 tab_config.name
             );
+            None
         } else {
             // Pass the active terminal's cwd to seed the branch picker's git lookup.
             let cwd = self
@@ -7436,6 +7440,7 @@ impl Workspace {
             self.tab_config_params_modal.open();
             self.current_workspace_state.is_tab_config_params_modal_open = true;
             ctx.notify();
+            None
         }
     }
 

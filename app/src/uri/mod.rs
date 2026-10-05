@@ -911,7 +911,7 @@ fn parse_tab_config_insert_options(url: &Url) -> Result<TabInsertOptions> {
 /// Tries the target as-is first, then with the extension stripped, so both
 /// `my_tab` and `my_tab.toml` resolve to `my_tab.toml` and dotted stems like
 /// `foo.bar` (from `foo.bar.toml`) still work when written without `.toml`.
-fn find_matching_tab_config(target: &str, configs: Vec<TabConfig>) -> Option<TabConfig> {
+pub(crate) fn find_matching_tab_config(target: &str, configs: Vec<TabConfig>) -> Option<TabConfig> {
     let raw = target.to_lowercase();
     let stripped = remove_extension(target).map(str::to_lowercase);
     configs.into_iter().find(|c| {

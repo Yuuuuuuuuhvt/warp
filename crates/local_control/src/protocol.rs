@@ -54,6 +54,15 @@ pub enum TabCloseMode {
     RightOf,
 }
 
+/// Where `tab.create` inserts a tab opened from a tab config, overriding the `new_tab_placement`
+/// setting for that tab.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TabPlacement {
+    AfterCurrentTab,
+    AfterAllTabs,
+}
+
 /// Empty parameters for actions whose catalog parameter spec is `none`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,11 +174,23 @@ pub struct TabCloseParams {
 }
 
 /// Parameters for `tab.create` and `window.create`.
+///
+/// `tab.create` accepts either a tab type or a tab config name. `window.create` accepts only a
+/// tab type.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TabCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_type: Option<TabType>,
+    /// File name stem of an existing tab config to open, matched case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_config: Option<String>,
+    /// Whether the new tab becomes the active tab. Defaults to `true` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<bool>,
+    /// Insertion position for the new tab, overriding the `new_tab_placement` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<TabPlacement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -27,6 +27,9 @@ fn strict_params_serialize_without_synthetic_discriminators() {
         ActionKind::TabCreate,
         TabCreateParams {
             tab_type: Some(TabType::Agent),
+            tab_config: None,
+            activate: None,
+            placement: None,
         },
     )
     .expect("tab.create params serialize");
@@ -42,6 +45,43 @@ fn strict_params_serialize_without_synthetic_discriminators() {
         .params_as::<TabCreateParams>()
         .expect_err("shell is not an accepted tab.create parameter");
     assert_eq!(error.code, ErrorCode::InvalidParams);
+}
+
+#[test]
+fn tab_create_params_roundtrip_tab_config_fields() {
+    let action = Action::with_params(
+        ActionKind::TabCreate,
+        TabCreateParams {
+            tab_type: None,
+            tab_config: Some("dev_setup".to_owned()),
+            activate: Some(false),
+            placement: Some(TabPlacement::AfterAllTabs),
+        },
+    )
+    .expect("tab.create tab config params serialize");
+    assert_eq!(
+        action.params,
+        serde_json::json!({
+            "tab_config": "dev_setup",
+            "activate": false,
+            "placement": "after_all_tabs",
+        })
+    );
+    let params = action
+        .params_as::<TabCreateParams>()
+        .expect("tab.create tab config params decode");
+    assert_eq!(params.tab_config.as_deref(), Some("dev_setup"));
+    assert_eq!(params.activate, Some(false));
+    assert_eq!(params.placement, Some(TabPlacement::AfterAllTabs));
+    assert_eq!(params.tab_type, None);
+
+    let placement =
+        serde_json::to_value(TabPlacement::AfterCurrentTab).expect("tab placement serializes");
+    assert_eq!(placement, serde_json::json!("after_current_tab"));
+    assert_eq!(
+        serde_json::from_value::<TabPlacement>(placement).expect("tab placement decodes"),
+        TabPlacement::AfterCurrentTab
+    );
 }
 
 #[test]
