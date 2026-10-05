@@ -128,6 +128,17 @@ struct LocalControlSession {
 }
 
 fn local_control_session(app: &mut App, mark_created: bool) -> LocalControlSession {
+    session_in_state(app, mark_created, true, true)
+}
+
+/// Builds a session whose bootstrap and long-command state the test chooses explicitly, so a
+/// refusal test does not depend on the mock terminal's default state.
+fn session_in_state(
+    app: &mut App,
+    mark_created: bool,
+    bootstrapped: bool,
+    long_running: bool,
+) -> LocalControlSession {
     initialize_workspace_app(app);
     let workspace = mock_workspace(app);
     // `session.list` reports a terminal pane's session id as the pane id, and the resolver matches
@@ -148,7 +159,13 @@ fn local_control_session(app: &mut App, mark_created: bool) -> LocalControlSessi
     });
 
     terminal.update(app, |view, _| {
-        view.model.lock().simulate_long_running_block("sleep", "");
+        let mut model = view.model.lock();
+        if bootstrapped {
+            model.block_list_mut().set_bootstrapped();
+        }
+        if long_running {
+            model.simulate_long_running_block("sleep", "");
+        }
     });
     if mark_created {
         terminal.update(app, |view, _| view.mark_created_by_local_control());
@@ -317,5 +334,69 @@ fn send_input_wraps_bracketed_paste_when_the_session_requested_it() {
             session.pty_writes.borrow().as_slice(),
             [b"\x1b[200~ls\x1b[201~".to_vec()].as_slice()
         );
+    });
+}
+
+#[test]
+fn send_input_refuses_a_session_that_is_still_bootstrapping() {
+    App::test((), |mut app| async move {
+        let session = session_in_state(&mut app, true, false, true);
+        assert!(
+            !session.terminal.read(&app, |view, _| view
+                .model
+                .lock()
+                .block_list()
+                .is_bootstrapped()),
+            "the test needs a session whose shell has not finished bootstrapping"
+        );
+
+        let error = session
+            .send(
+                &mut app,
+                json!({ "text": "task", "expected_user_input_count": 0 }),
+            )
+            .expect_err("a bootstrapping shell must not receive text");
+
+        assert_eq!(error.code, ErrorCode::TargetStateConflict);
+        assert!(error.message.contains("finish starting"));
+        assert!(session.pty_writes.borrow().is_empty());
+    });
+}
+
+#[test]
+fn send_input_refuses_a_session_without_a_long_command() {
+    App::test((), |mut app| async move {
+        let session = session_in_state(&mut app, true, true, false);
+
+        let error = session
+            .send(
+                &mut app,
+                json!({ "text": "rm -rf x", "expected_user_input_count": 0 }),
+            )
+            .expect_err("text must not land on a shell prompt");
+
+        assert_eq!(error.code, ErrorCode::TargetStateConflict);
+        assert!(error.message.contains("long command"));
+        assert!(session.pty_writes.borrow().is_empty());
+    });
+}
+
+#[test]
+fn only_counted_writes_advance_the_user_input_count() {
+    App::test((), |mut app| async move {
+        let session = local_control_session(&mut app, true);
+        assert_eq!(session.user_input_count(&app), 0);
+
+        // Keyboard, paste and IME input reach the PTY through `write_user_bytes_to_pty`.
+        session.terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_to_pty(b"typed".to_vec(), ctx);
+        });
+        assert_eq!(session.user_input_count(&app), 1);
+
+        // Wheel and mouse translations, and `session.send_input` itself, pass `false`.
+        session.terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_to_pty_inner(b"\x1bOA".to_vec(), false, ctx);
+        });
+        assert_eq!(session.user_input_count(&app), 1);
     });
 }

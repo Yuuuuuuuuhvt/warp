@@ -108,14 +108,14 @@ sequenceDiagram
 
 ### `session.send_input` deviation in this fork
 
-This fork adds one action beyond the upstream catalog: `session.send_input` submits terminal input instead of only staging it. It exists so an external agent can drive a session it created rather than typing into a session the user is attending.
+This fork adds one action beyond the upstream catalog: `session.send_input` submits terminal input instead of only staging it. The catalog therefore has 85 actions; `SECURITY.md`, `PRODUCT.md` and `TECH.md` in this directory are kept as upstream wrote them and describe the upstream 84-action catalog, so that daily upstream merges do not conflict on them. It exists so an external agent can drive a session it created rather than typing into a session the user is attending.
 
 The write surface is deliberately narrow:
 
 - It writes only to sessions that a local-control `tab.create` request created in this process. The marker is in-memory only, so a session restored after a WarpOss restart is never writable.
 - It requires an explicit session id. `active` and window, tab, or pane selectors are rejected, so a request can never land in the user's focused tab.
 - `text` cannot contain C0 control characters or DEL, which would otherwise close an open bracketed paste early or inject a control sequence.
-- It requires a running long command and refuses while Warp's own agent controls the active block.
+- It requires a session whose shell has finished bootstrapping and is running a long command, and refuses while Warp's own agent controls the active block. Warp treats the bootstrap script as a long-running block, so the bootstrap check keeps text out of a shell that is still starting.
 - It compares the caller's `expected_user_input_count` against the session's live `user_input_count`. The intended flow is a text write, a short wait, then a submit that re-checks the count; any user keystroke in between advances the count and the submit is refused with `target_state_conflict` instead of reaching the user's typing. Its own writes do not advance the count.
 ## Documentation review notes
 - Treat `warpctrl` as provisional executable naming until packaging signs off on final artifact aliases.

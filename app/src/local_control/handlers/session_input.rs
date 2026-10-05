@@ -22,7 +22,7 @@ use crate::terminal::model::grid::grid_handler::TermMode;
 
 const ACTION: ActionKind = ActionKind::SessionSendInput;
 
-/// Largest UTF-8 byte length accepted for `text`.
+/// Largest accepted length of `text`, counted in UTF-8 bytes rather than characters.
 const MAX_TEXT_BYTES: usize = 16384;
 
 #[derive(Serialize)]
@@ -64,11 +64,12 @@ pub(crate) fn send_input(
     // `is_long_running` locks the terminal model itself, so it runs in its own read and never
     // under the model guard acquired below.
     let long_running = terminal_view.read(ctx, |terminal_view, _| terminal_view.is_long_running());
-    let (created_by_local_control, agent_in_control, user_input_count, bracketed) = terminal_view
-        .read(ctx, |terminal_view, _| {
+    let (created_by_local_control, bootstrapped, agent_in_control, user_input_count, bracketed) =
+        terminal_view.read(ctx, |terminal_view, _| {
             let model = terminal_view.model.lock();
             (
                 terminal_view.created_by_local_control(),
+                model.block_list().is_bootstrapped(),
                 model.block_list().active_block().is_agent_in_control(),
                 terminal_view.user_input_count(),
                 model.is_term_mode_set(TermMode::BRACKETED_PASTE),
@@ -79,6 +80,15 @@ pub(crate) fn send_input(
         return Err(ControlError::new(
             ErrorCode::InsufficientPermissions,
             format!("{action} only writes to sessions created by tab.create through local control"),
+        ));
+    }
+    // Warp counts the shell's bootstrap script as a long-running block, so `long_running` alone
+    // would accept text while the shell is still starting. An end-to-end run on 2026-10-06 wrote
+    // text at that moment, and the tab config command after bootstrap never ran.
+    if !bootstrapped {
+        return Err(ControlError::new(
+            ErrorCode::TargetStateConflict,
+            format!("{action} requires the session to finish starting its shell"),
         ));
     }
     if !long_running {
@@ -142,7 +152,8 @@ pub(crate) fn send_input(
 
 /// Validates `session.send_input` parameters before any target or session state is touched.
 ///
-/// `text` must be non-empty and free of C0 control characters and DEL. That restriction keeps the
+/// `text` must be non-empty and free of control characters: `char::is_control` covers C0, DEL and
+/// C1. That restriction keeps the
 /// payload from closing an open bracketed paste early or injecting an escape sequence that a
 /// terminal program would interpret as input of its own.
 pub(crate) fn validate_send_input_params(
@@ -170,10 +181,7 @@ pub(crate) fn validate_send_input_params(
             format!("{action} rejects text longer than {MAX_TEXT_BYTES} UTF-8 bytes"),
         ));
     }
-    if let Some(character) = text
-        .chars()
-        .find(|character| character.is_control() || *character == '\u{7f}')
-    {
+    if let Some(character) = text.chars().find(|character| character.is_control()) {
         return Err(ControlError::with_details(
             ErrorCode::InvalidParams,
             format!("{action} rejects control characters in text"),
