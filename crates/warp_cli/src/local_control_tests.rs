@@ -91,6 +91,19 @@ fn rejects_tab_config_combined_with_tab_type() {
 }
 
 #[test]
+fn window_create_does_not_offer_tab_config_options() {
+    for flags in [
+        &["--tab-config", "dev_setup"][..],
+        &["--no-activate"][..],
+        &["--placement", "after-all-tabs"][..],
+    ] {
+        let err = ControlArgs::try_parse_from(["warpctrl", "window", "create"].iter().chain(flags))
+            .expect_err("window create accepts only a tab type");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+}
+
+#[test]
 fn rejects_tab_insert_options_without_tab_config() {
     for flags in [
         &["--no-activate"][..],
@@ -486,6 +499,21 @@ fn retained_action_examples() -> Vec<(ActionKind, Vec<&'static str>)> {
             vec!["warpctrl", "session", "reopen-closed"],
         ),
         (
+            ActionKind::SessionSendInput,
+            vec![
+                "warpctrl",
+                "session",
+                "send-input",
+                "--session",
+                "session_1",
+                "--text",
+                "git status",
+                "--submit",
+                "--expected-user-input-count",
+                "4",
+            ],
+        ),
+        (
             ActionKind::InputInsert,
             vec!["warpctrl", "input", "insert", "hello"],
         ),
@@ -710,6 +738,7 @@ fn parsed_action_kind(command: &ControlCommand) -> Option<ActionKind> {
             SessionCommand::Previous(_) => Some(ActionKind::SessionPrevious),
             SessionCommand::Next(_) => Some(ActionKind::SessionNext),
             SessionCommand::ReopenClosed(_) => Some(ActionKind::SessionReopenClosed),
+            SessionCommand::SendInput(_) => Some(ActionKind::SessionSendInput),
         },
         ControlCommand::Input(command) => match command {
             InputCommand::Insert(_) => Some(ActionKind::InputInsert),

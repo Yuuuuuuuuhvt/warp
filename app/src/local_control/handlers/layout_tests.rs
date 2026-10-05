@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ::local_control::protocol::{TabCreateParams, TabPlacement, TargetSelector};
 use ::local_control::{ErrorCode, InstanceId};
-use warpui::{App, TypedActionView};
+use warpui::{App, TypedActionView, ViewHandle};
 
 use super::{create_tab, insert_tab_config_tab, select_tab_config};
 use crate::local_control::LocalControlBridge;
@@ -12,8 +12,8 @@ use crate::local_control::resolver::{
 };
 use crate::tab_configs::tab_config::{TabConfigPaneNode, TabConfigPaneType};
 use crate::tab_configs::{TabConfig, TabConfigParam, TabConfigParamType};
-use crate::workspace::WorkspaceAction;
 use crate::workspace::view::tests::{initialize_app, mock_workspace};
+use crate::workspace::{Workspace, WorkspaceAction};
 
 fn test_tab_config(name: &str) -> TabConfig {
     TabConfig {
@@ -72,7 +72,38 @@ fn tab_create_handler_adds_and_activates_terminal_tab() {
             response["tab"]["session_ids"].as_array().map(Vec::len),
             Some(1)
         );
+        // Only the sessions of the tab this request created become writable by
+        // session.send_input; tabs the user already had stay unmarked.
+        assert_eq!(
+            created_by_local_control_flags(&workspace, previous_count, &app),
+            vec![true]
+        );
+        assert_eq!(
+            created_by_local_control_flags(&workspace, 0, &app),
+            vec![false]
+        );
     });
+}
+
+/// The `created_by_local_control` marker of every terminal session in the tab at `index`.
+fn created_by_local_control_flags(
+    workspace: &ViewHandle<Workspace>,
+    index: usize,
+    app: &App,
+) -> Vec<bool> {
+    workspace.read(app, |workspace, ctx| {
+        let pane_group = workspace.get_pane_group_view(index).unwrap();
+        pane_group.read(ctx, |pane_group, ctx| {
+            pane_group
+                .visible_pane_ids()
+                .into_iter()
+                .filter_map(|pane_id| pane_group.terminal_view_from_pane_id(pane_id, ctx))
+                .map(|terminal_view| {
+                    terminal_view.read(ctx, |view, _| view.created_by_local_control())
+                })
+                .collect()
+        })
+    })
 }
 
 #[test]
@@ -102,7 +133,8 @@ fn tab_create_rejects_shell_parameter() {
 fn tab_create_rejects_tab_config_combined_with_tab_type() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let _workspace = mock_workspace(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let previous_count = workspace.read(&app, |workspace, _| workspace.tab_count());
         let bridge = app.add_singleton_model(LocalControlBridge::new);
 
         let err = bridge.update(&mut app, |_, ctx| {
@@ -117,6 +149,10 @@ fn tab_create_rejects_tab_config_combined_with_tab_type() {
 
         assert_eq!(err.code, ErrorCode::InvalidParams);
         assert!(err.message.contains("tab_config"));
+        assert_eq!(
+            workspace.read(&app, |workspace, _| workspace.tab_count()),
+            previous_count
+        );
     });
 }
 
@@ -124,7 +160,8 @@ fn tab_create_rejects_tab_config_combined_with_tab_type() {
 fn tab_create_rejects_activation_options_without_tab_config() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let _workspace = mock_workspace(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let previous_count = workspace.read(&app, |workspace, _| workspace.tab_count());
         let bridge = app.add_singleton_model(LocalControlBridge::new);
 
         for params in [
@@ -138,6 +175,10 @@ fn tab_create_rejects_activation_options_without_tab_config() {
             assert_eq!(err.code, ErrorCode::InvalidParams);
             assert!(err.message.contains("tab_config"));
         }
+        assert_eq!(
+            workspace.read(&app, |workspace, _| workspace.tab_count()),
+            previous_count
+        );
     });
 }
 
@@ -230,13 +271,18 @@ fn tab_create_inserts_tab_config_in_background_without_activating() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let workspace = mock_workspace(&mut app);
+        // Three tabs with the first one active: the default AfterCurrentTab placement would
+        // insert at index 1, so only an honoured AfterAllTabs placement yields index 3.
         workspace.update(&mut app, |workspace, ctx| {
-            workspace.handle_action(
-                &WorkspaceAction::AddTerminalTab {
-                    hide_homepage: false,
-                },
-                ctx,
-            );
+            for _ in 0..2 {
+                workspace.handle_action(
+                    &WorkspaceAction::AddTerminalTab {
+                        hide_homepage: false,
+                    },
+                    ctx,
+                );
+            }
+            workspace.activate_tab(0, ctx);
         });
         let active_before =
             workspace.read(&app, |workspace, _| workspace.active_tab_pane_group().id());
@@ -253,18 +299,18 @@ fn tab_create_inserts_tab_config_in_background_without_activating() {
         });
         let response = app.read(|ctx| inserted.into_response(ctx));
 
-        assert_eq!(response.index, 2);
+        assert_eq!(response.index, 3);
         assert!(!response.activated);
-        assert_eq!(response.previous_count, 2);
-        assert_eq!(response.count, 3);
-        assert_eq!(response.active_index, 1);
+        assert_eq!(response.previous_count, 3);
+        assert_eq!(response.count, 4);
+        assert_eq!(response.active_index, 0);
         assert_ne!(response.id, active_before.to_string());
         assert_eq!(response.session_ids.len(), 1);
         workspace.read(&app, |workspace, _| {
-            assert_eq!(workspace.active_tab_index(), 1);
+            assert_eq!(workspace.active_tab_index(), 0);
             assert_eq!(workspace.active_tab_pane_group().id(), active_before);
             assert_eq!(
-                workspace.get_pane_group_view(2).unwrap().id().to_string(),
+                workspace.get_pane_group_view(3).unwrap().id().to_string(),
                 response.id
             );
         });

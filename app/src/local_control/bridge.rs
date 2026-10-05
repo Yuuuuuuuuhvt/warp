@@ -10,7 +10,7 @@ use ::local_control::{
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::local_control::handlers::{
-    app_state, close, metadata, metadata_config, settings_surfaces,
+    app_state, close, metadata, metadata_config, session_input, settings_surfaces,
 };
 use crate::local_control::permissions::{
     ensure_action_allowed, ensure_feature_enabled, ensure_protocol_version,
@@ -157,6 +157,9 @@ impl LocalControlBridge {
             }
             ActionKind::SessionList => metadata::session_list(&request.target, ctx),
             ActionKind::SessionInspect => metadata::session_inspect(&request.target, ctx),
+            ActionKind::SessionSendInput => {
+                session_input::send_input(&request.action.params, &request.target, ctx)
+            }
             ActionKind::ThemeList => settings_surfaces::theme_list(ctx),
             ActionKind::ThemeGet => settings_surfaces::theme_get(ctx),
             ActionKind::ThemeSet

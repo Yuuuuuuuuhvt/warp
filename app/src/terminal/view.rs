@@ -2986,6 +2986,15 @@ pub struct TerminalView {
     /// State handle for the shimmering text animation in the remote server loading footer.
     /// Persisted across renders so the animation doesn't restart.
     remote_server_shimmer_handle: ShimmeringTextStateHandle,
+
+    /// Number of writes forwarded to the PTY on behalf of the user, excluding automatic mouse and
+    /// wheel translations. Local control compares this count between requests to detect user
+    /// typing, so mouse and wheel events must not move it.
+    user_input_count: u64,
+
+    /// Whether a local-control `tab.create` request created this session. The marker lives only in
+    /// memory: a restarted WarpOss process does not restore it.
+    created_by_local_control: bool,
 }
 
 /// Parameters stashed when a code review pane open is requested with
@@ -4426,6 +4435,8 @@ impl TerminalView {
             focus_handle: None,
             sessions,
             remote_server_shimmer_handle: ShimmeringTextStateHandle::new(),
+            user_input_count: 0,
+            created_by_local_control: false,
             active_block_metadata: None,
             canonical_session_pwd_cache: RefCell::new(None),
             block_text_selection_start_position: None,
@@ -9569,6 +9580,22 @@ impl TerminalView {
             && !model.is_read_only()
     }
 
+    /// Number of user keystroke writes forwarded to this session's PTY.
+    pub(crate) fn user_input_count(&self) -> u64 {
+        self.user_input_count
+    }
+
+    /// Whether a local-control `tab.create` request created this session.
+    pub(crate) fn created_by_local_control(&self) -> bool {
+        self.created_by_local_control
+    }
+
+    /// Marks this session as created by a local-control `tab.create` request, which is the only
+    /// kind of session `session.send_input` may write to.
+    pub(crate) fn mark_created_by_local_control(&mut self) {
+        self.created_by_local_control = true;
+    }
+
     /// If ctrl-r was pressed at an idle prompt on a session using fzf or atuin, hands the keypress
     /// off to that plugin instead of opening Warp's own command search.
     ///
@@ -9973,6 +10000,23 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.write_user_bytes_to_pty_inner(data, true, ctx)
+    }
+
+    /// Forwards bytes to the PTY on behalf of the user.
+    ///
+    /// `counts_as_user_input` records the write in [`Self::user_input_count`] once the bytes reach
+    /// the PTY. Local control compares that count between a text write and a separate submit, and
+    /// refuses the submit when the user typed in between. Automatic mouse and wheel translations
+    /// pass `false`, because they depend on where the pointer happens to sit rather than on
+    /// deliberate keystrokes, and counting them would let an idle session refuse a legitimate
+    /// submit.
+    pub(crate) fn write_user_bytes_to_pty_inner<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        data: B,
+        counts_as_user_input: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         {
             let mut terminal_model = self.model.lock();
             let active_block = terminal_model.block_list().active_block();
@@ -9994,6 +10038,9 @@ impl TerminalView {
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         self.write_to_pty(bytes, ctx);
         self.emit_non_editor_typed_event(bytes_vec, ctx);
+        if counts_as_user_input {
+            self.user_input_count = self.user_input_count.saturating_add(1);
+        }
         true
     }
 
@@ -10071,7 +10118,7 @@ impl TerminalView {
             alt_screen_scroll_to_pty_bytes(lines_to_scroll, point, report_mouse, model.deref())
         };
         if let Some(bytes) = bytes {
-            self.write_user_bytes_to_pty(bytes, ctx);
+            self.write_user_bytes_to_pty_inner(bytes, false, ctx);
             ctx.notify();
         }
     }
@@ -18640,7 +18687,7 @@ impl TerminalView {
         let escape_sequences = mouse_state
             .to_escape_sequence(self.model.lock().deref())
             .unwrap();
-        self.write_user_bytes_to_pty(escape_sequences, ctx);
+        self.write_user_bytes_to_pty_inner(escape_sequences, false, ctx);
     }
 
     fn alt_select(&mut self, arg: &SelectAction<Point>, ctx: &mut ViewContext<Self>) {

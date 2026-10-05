@@ -21,6 +21,7 @@ use crate::local_control::LocalControlBridge;
 use crate::local_control::resolver::{reject_target_families, require_active_window_id_for_action};
 use crate::pane_group::{PaneGroup, PaneId};
 use crate::settings::{AISettings, CodeSettings};
+use crate::terminal::model::grid::grid_handler::TermMode;
 use crate::workspace::Workspace;
 use crate::workspace::tab_settings::TabSettings;
 
@@ -126,6 +127,11 @@ struct SessionEntry {
     pane_id: PaneId,
     pane_index: usize,
     is_active: bool,
+    user_input_count: u64,
+    created_by_local_control: bool,
+    long_running: bool,
+    alt_screen: bool,
+    bracketed_paste: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -885,27 +891,54 @@ fn session_entries_for_panes(
 ) -> Vec<SessionEntry> {
     let mut entries = Vec::new();
     for pane in panes {
-        let (has_terminal_session, is_active) = pane.pane_group.read(ctx, |pane_group, ctx| {
-            (
-                pane_group
-                    .terminal_view_from_pane_id(pane.pane_id, ctx)
-                    .is_some(),
-                pane_group.active_session_id(ctx).map(PaneId::from) == Some(pane.pane_id),
-            )
+        let terminal_view = pane.pane_group.read(ctx, |pane_group, ctx| {
+            pane_group.terminal_view_from_pane_id(pane.pane_id, ctx)
         });
-        if has_terminal_session {
-            entries.push(SessionEntry {
-                window_id: pane.window_id,
-                window_index: pane.window_index,
-                tab_id: pane.tab_id,
-                tab_index: pane.tab_index,
-                pane_id: pane.pane_id,
-                pane_index: pane.index,
-                is_active,
-            });
-        }
+        let Some(terminal_view) = terminal_view else {
+            continue;
+        };
+        let is_active = pane.pane_group.read(ctx, |pane_group, ctx| {
+            pane_group.active_session_id(ctx).map(PaneId::from) == Some(pane.pane_id)
+        });
+        // `is_long_running` locks the terminal model itself, so it runs in its own read and never
+        // under the model guard acquired below.
+        let long_running =
+            terminal_view.read(ctx, |terminal_view, _| terminal_view.is_long_running());
+        let state = terminal_view.read(ctx, |terminal_view, _| {
+            let model = terminal_view.model.lock();
+            SessionEntryState {
+                user_input_count: terminal_view.user_input_count(),
+                created_by_local_control: terminal_view.created_by_local_control(),
+                long_running,
+                alt_screen: model.is_alt_screen_active(),
+                bracketed_paste: model.is_term_mode_set(TermMode::BRACKETED_PASTE),
+            }
+        });
+        entries.push(SessionEntry {
+            window_id: pane.window_id,
+            window_index: pane.window_index,
+            tab_id: pane.tab_id,
+            tab_index: pane.tab_index,
+            pane_id: pane.pane_id,
+            pane_index: pane.index,
+            is_active,
+            user_input_count: state.user_input_count,
+            created_by_local_control: state.created_by_local_control,
+            long_running: state.long_running,
+            alt_screen: state.alt_screen,
+            bracketed_paste: state.bracketed_paste,
+        });
     }
     entries
+}
+
+/// Terminal state that a session listing reports alongside the pane it belongs to.
+struct SessionEntryState {
+    user_input_count: u64,
+    created_by_local_control: bool,
+    long_running: bool,
+    alt_screen: bool,
+    bracketed_paste: bool,
 }
 
 fn session_values(entries: Vec<SessionEntry>) -> Vec<Value> {
@@ -921,6 +954,11 @@ fn session_values(entries: Vec<SessionEntry>) -> Vec<Value> {
                 "window_id": entry.window_id.to_string(),
                 "window_index": entry.window_index as u32,
                 "is_active": entry.is_active,
+                "user_input_count": entry.user_input_count,
+                "created_by_local_control": entry.created_by_local_control,
+                "long_running": entry.long_running,
+                "alt_screen": entry.alt_screen,
+                "bracketed_paste": entry.bracketed_paste,
             })
         })
         .collect()

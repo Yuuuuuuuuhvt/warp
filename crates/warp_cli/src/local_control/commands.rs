@@ -4,8 +4,8 @@ use local_control::protocol::{
     Action, ActionKind, ActionNameParams, BindingNameParams, BooleanValueParams, ColorValueParams,
     ControlError, DirectionParams, EmptyParams, ErrorCode, FileOpenParams, KeyParams,
     KeyValueParams, PageQueryParams, QueryParams, RenameParams, RequestEnvelope, ResizeParams,
-    SettingListParams, TabActivateParams, TabActivationMode, TabCloseMode, TabCloseParams,
-    TabCreateParams, TextParams, ThemeNameParams,
+    SessionSendInputParams, SettingListParams, TabActivateParams, TabActivationMode, TabCloseMode,
+    TabCloseParams, TabCreateParams, TextParams, ThemeNameParams,
 };
 use local_control::selection::select_instance;
 use serde::Serialize;
@@ -16,10 +16,11 @@ use crate::local_control::output::{write_json, write_json_line};
 use crate::local_control::selectors::{instance_selector, target_selector};
 use crate::local_control::{
     ActionCatalogCommand, AppCommand, AppearanceCommand, CapabilityCommand, FileCommand,
-    InputCommand, InstanceCommand, KeybindingCommand, PaneCommand, SessionCommand, SettingCommand,
-    SurfaceCommand, SurfaceOpenCommand, SurfaceOpenToggleCommand, SurfaceQueryCommand,
-    SurfaceSettingsCommand, SurfaceToggleCommand, TabActivateArgs, TabCloseArgs, TabColorCommand,
-    TabCommand, TargetArgs, ThemeCommand, WindowCommand,
+    InputCommand, InstanceCommand, KeybindingCommand, PaneCommand, SessionCommand,
+    SessionSendInputArgs, SettingCommand, SurfaceCommand, SurfaceOpenCommand,
+    SurfaceOpenToggleCommand, SurfaceQueryCommand, SurfaceSettingsCommand, SurfaceToggleCommand,
+    TabActivateArgs, TabCloseArgs, TabColorCommand, TabCommand, TargetArgs, ThemeCommand,
+    WindowCommand,
 };
 
 pub(super) fn run_surface_command(
@@ -340,9 +341,7 @@ pub(super) fn run_window_command(
             ActionKind::WindowCreate,
             TabCreateParams {
                 tab_type: args.tab_type.map(Into::into),
-                tab_config: args.tab_config,
-                activate: args.no_activate.then_some(false),
-                placement: args.placement.map(Into::into),
+                ..TabCreateParams::default()
             },
             output_format,
         ),
@@ -523,7 +522,30 @@ pub(super) fn run_session_command(
             EmptyParams {},
             output_format,
         ),
+        SessionCommand::SendInput(args) => run_session_send_input_command(args, output_format),
     }
+}
+
+fn run_session_send_input_command(
+    args: SessionSendInputArgs,
+    output_format: OutputFormat,
+) -> Result<(), ControlError> {
+    let target = TargetArgs {
+        instance: args.instance,
+        pid: args.pid,
+        session: Some(args.session),
+        ..Default::default()
+    };
+    run_action_with_params(
+        target,
+        ActionKind::SessionSendInput,
+        SessionSendInputParams {
+            text: args.text,
+            submit: args.submit,
+            expected_user_input_count: args.expected_user_input_count,
+        },
+        output_format,
+    )
 }
 
 pub(super) fn run_input_command(

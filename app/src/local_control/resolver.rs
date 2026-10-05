@@ -2,9 +2,9 @@
 use ::local_control::protocol::{
     ActionNameParams, ActionParameterSpec, BindingNameParams, BooleanValueParams, ColorValueParams,
     DirectionParams, EmptyParams, FileOpenParams, KeyParams, KeyValueParams, NamespaceParams,
-    PageQueryParams, PaneTarget, QueryParams, RenameParams, ResizeParams, SessionTarget,
-    TabActivateParams, TabCloseParams, TabCreateParams, TabTarget, TargetSelector, TextParams,
-    ThemeNameParams, WindowTarget,
+    PageQueryParams, PaneTarget, QueryParams, RenameParams, ResizeParams, SessionSendInputParams,
+    SessionTarget, TabActivateParams, TabCloseParams, TabCreateParams, TabTarget, TargetSelector,
+    TextParams, ThemeNameParams, WindowTarget,
 };
 use ::local_control::{ActionKind, ControlError, ErrorCode, TargetScope};
 use warpui::{AppContext, ModelContext, SingletonEntity, TypedActionView, ViewHandle, WindowId};
@@ -12,6 +12,7 @@ use warpui::{AppContext, ModelContext, SingletonEntity, TypedActionView, ViewHan
 use crate::local_control::LocalControlBridge;
 use crate::local_control::handlers::metadata::action_metadata_for_name;
 use crate::pane_group::{ActivationReason, PaneGroup, PaneGroupAction, PaneId};
+use crate::terminal::view::TerminalView;
 use crate::workspace::{Workspace, WorkspaceAction, WorkspaceRegistry};
 
 pub(crate) fn validate_tab_create_target(target: &TargetSelector) -> Result<(), ControlError> {
@@ -129,6 +130,7 @@ pub(crate) fn validate_action_params(action: &::local_control::Action) -> Result
         ActionParameterSpec::Query => parse_params::<QueryParams>(action),
         ActionParameterSpec::Rename => parse_params::<RenameParams>(action),
         ActionParameterSpec::Resize => parse_params::<ResizeParams>(action),
+        ActionParameterSpec::SessionSendInput => parse_params::<SessionSendInputParams>(action),
         ActionParameterSpec::TabActivate => parse_params::<TabActivateParams>(action),
         ActionParameterSpec::TabClose => parse_params::<TabCloseParams>(action),
         ActionParameterSpec::TabCreate => parse_params::<TabCreateParams>(action),
@@ -601,4 +603,80 @@ pub(crate) fn target_session_pane_id(
         }
     }
     Ok(session_pane_id)
+}
+
+/// Resolves the terminal view of the session named by an explicit session id.
+///
+/// `session.send_input` refuses `active` and window, tab, or pane selectors so a request can never
+/// write into whichever tab the user currently has focused. The id is matched across every window
+/// and tab because a local-control session may live in a background tab, where the active-only
+/// helpers cannot see it.
+pub(crate) fn explicit_session_terminal_view(
+    action: ActionKind,
+    target: &TargetSelector,
+    ctx: &mut ModelContext<LocalControlBridge>,
+) -> Result<ViewHandle<TerminalView>, ControlError> {
+    reject_target_families(
+        action,
+        target.window.is_some() || target.tab.is_some() || target.pane.is_some(),
+        "window, tab, or pane selectors",
+    )?;
+    let session_id = match target.session.as_ref() {
+        Some(SessionTarget::Id { id }) => id.clone(),
+        Some(SessionTarget::Active) => {
+            return Err(ControlError::new(
+                ErrorCode::InvalidSelector,
+                format!(
+                    "{} requires an explicit session id, not active",
+                    action.as_str()
+                ),
+            ));
+        }
+        None => {
+            return Err(ControlError::new(
+                ErrorCode::InvalidSelector,
+                format!("{} requires an explicit session id", action.as_str()),
+            ));
+        }
+    };
+
+    let mut window_ids = ctx.window_ids().collect::<Vec<_>>();
+    window_ids.sort_by_key(ToString::to_string);
+    let matches = window_ids
+        .into_iter()
+        .filter_map(|window_id| ctx.views_of_type::<Workspace>(window_id))
+        .flatten()
+        .flat_map(|workspace| {
+            workspace.read(ctx, |workspace, _| {
+                workspace.tab_views().cloned().collect::<Vec<_>>()
+            })
+        })
+        .filter_map(|pane_group| {
+            pane_group.read(ctx, |pane_group, ctx| {
+                pane_group
+                    .visible_pane_ids()
+                    .into_iter()
+                    .find(|pane_id| pane_id.to_string() == session_id.0)
+                    .and_then(|pane_id| pane_group.terminal_view_from_pane_id(pane_id, ctx))
+            })
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => Err(ControlError::new(
+            ErrorCode::StaleTarget,
+            format!(
+                "{} cannot resolve the requested session id",
+                action.as_str()
+            ),
+        )),
+        [terminal_view] => Ok(terminal_view.clone()),
+        _ => Err(ControlError::new(
+            ErrorCode::AmbiguousTarget,
+            format!(
+                "{} resolved multiple sessions for one session id",
+                action.as_str()
+            ),
+        )),
+    }
 }

@@ -161,6 +161,21 @@ pub struct ResizeParams {
     pub amount: Option<u32>,
 }
 
+/// Parameters for `session.send_input`.
+///
+/// At least one of `text` and `submit` must be present. `expected_user_input_count` is the
+/// session's `user_input_count` as the caller last observed it; the request is rejected when the
+/// session has received user input since then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSendInputParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub submit: bool,
+    pub expected_user_input_count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TabActivateParams {

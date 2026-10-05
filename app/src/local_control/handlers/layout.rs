@@ -14,8 +14,9 @@ use crate::local_control::resolver::{
     decode_params, tab_create_window_id_for_target, validate_tab_create_params,
     validate_tab_create_target, workspace_for_window,
 };
-use crate::pane_group::PaneGroup;
+use crate::pane_group::{PaneGroup, PaneId};
 use crate::tab_configs::TabConfig;
+use crate::terminal::view::TerminalView;
 use crate::uri::find_matching_tab_config;
 use crate::user_config::{load_tab_configs, tab_configs_dir};
 use crate::workspace::tab_settings::NewTabPlacement;
@@ -90,6 +91,7 @@ pub(crate) fn create_tab(
         Some(tab_config) => insert_tab_config_tab(workspace, tab_config, &params, ctx),
         None => insert_typed_tab(workspace, &params, ctx),
     })?;
+    mark_sessions_created_by_local_control(&inserted.pane_group, ctx);
     let tab = inserted.into_response(ctx);
     serde_json::to_value(TabCreateResponse {
         action: ActionKind::TabCreate.as_str(),
@@ -124,6 +126,8 @@ fn insert_tab_config_tab(
         placement: params.placement.map(new_tab_placement),
     };
     let previous_count = workspace.tab_count();
+    // `select_tab_config` already rejected configs that declare params, so the param-fill modal
+    // path that returns None is unreachable here; the error only guards a future caller.
     let index = workspace
         .open_tab_config_with_options(config, options, ctx)
         .ok_or_else(|| {
@@ -223,16 +227,40 @@ fn new_tab_placement(placement: TabPlacement) -> NewTabPlacement {
 /// Session identifiers of the terminal panes in `pane_group`, in the same format as
 /// `session.list` reports them.
 fn session_ids_for_pane_group(pane_group: &ViewHandle<PaneGroup>, ctx: &AppContext) -> Vec<String> {
+    terminal_views_for_pane_group(pane_group, ctx)
+        .into_iter()
+        .map(|(pane_id, _)| pane_id.to_string())
+        .collect()
+}
+
+/// Marks every terminal session of a freshly created tab as writable by `session.send_input`.
+/// The marker is intentionally in-memory only, so sessions restored after a WarpOss restart are
+/// never writable by local control.
+fn mark_sessions_created_by_local_control(
+    pane_group: &ViewHandle<PaneGroup>,
+    ctx: &mut ModelContext<LocalControlBridge>,
+) {
+    for (_, terminal_view) in terminal_views_for_pane_group(pane_group, ctx) {
+        terminal_view.update(ctx, |terminal_view, _| {
+            terminal_view.mark_created_by_local_control();
+        });
+    }
+}
+
+/// Terminal panes of `pane_group` together with their session ids.
+fn terminal_views_for_pane_group(
+    pane_group: &ViewHandle<PaneGroup>,
+    ctx: &AppContext,
+) -> Vec<(PaneId, ViewHandle<TerminalView>)> {
     pane_group.read(ctx, |pane_group, ctx| {
         pane_group
             .visible_pane_ids()
             .into_iter()
-            .filter(|pane_id| {
+            .filter_map(|pane_id| {
                 pane_group
-                    .terminal_view_from_pane_id(*pane_id, ctx)
-                    .is_some()
+                    .terminal_view_from_pane_id(pane_id, ctx)
+                    .map(|terminal_view| (pane_id, terminal_view))
             })
-            .map(|pane_id| pane_id.to_string())
             .collect()
     })
 }

@@ -48,6 +48,7 @@ pub enum ActionParameterSpec {
     Query,
     Rename,
     Resize,
+    SessionSendInput,
     TabActivate,
     TabClose,
     TabCreate,
@@ -224,6 +225,7 @@ define_action_catalog! {
         SessionPrevious => { name: "session.previous", status: Implemented, target: Session, params: None, result: Acknowledgement },
         SessionNext => { name: "session.next", status: Implemented, target: Session, params: None, result: Acknowledgement },
         SessionReopenClosed => { name: "session.reopen_closed", status: Implemented, target: Session, params: None, result: Acknowledgement },
+        SessionSendInput => { name: "session.send_input", status: Implemented, target: Session, params: SessionSendInput, result: Acknowledgement },
     }
 
     input {

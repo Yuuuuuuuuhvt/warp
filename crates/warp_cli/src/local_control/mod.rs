@@ -263,7 +263,7 @@ pub enum WindowCommand {
     Inspect(TargetArgs),
 
     /// Create a new window.
-    Create(TabCreateArgs),
+    Create(WindowCreateArgs),
 
     /// Focus a window.
     Focus(TargetArgs),
@@ -371,6 +371,9 @@ pub enum SessionCommand {
 
     /// Reopen the most recently closed session.
     ReopenClosed(TargetArgs),
+
+    /// Send text and/or a submit keystroke to a session created by `tab.create`.
+    SendInput(SessionSendInputArgs),
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -606,6 +609,16 @@ pub struct TargetArgs {
     pub session: Option<String>,
 }
 
+/// `window create` accepts only a tab type; the tab config options belong to `tab create`.
+#[derive(Debug, Clone, Args)]
+pub struct WindowCreateArgs {
+    #[arg(long = "type", value_enum)]
+    pub tab_type: Option<CliTabType>,
+
+    #[command(flatten)]
+    pub target: TargetArgs,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct TabCreateArgs {
     #[arg(long = "type", value_enum, conflicts_with = "tab_config")]
@@ -702,6 +715,35 @@ pub struct TextTargetArgs {
 
     #[command(flatten)]
     pub target: TargetArgs,
+}
+
+/// Arguments for `session.send-input`, which names one session explicitly and never accepts the
+/// active session.
+#[derive(Debug, Clone, Args)]
+pub struct SessionSendInputArgs {
+    /// Opaque session id from `warpctrl session list`.
+    #[arg(long = "session", required = true)]
+    pub session: String,
+
+    /// Text to paste into the session. Control characters are rejected.
+    #[arg(long = "text")]
+    pub text: Option<String>,
+
+    /// Submit the text by sending a carriage return after it.
+    #[arg(long = "submit")]
+    pub submit: bool,
+
+    /// Session `user_input_count` the caller last observed; the write is refused when it changed.
+    #[arg(long = "expected-user-input-count")]
+    pub expected_user_input_count: u64,
+
+    /// Target a specific local Warp instance id from `warpctrl instance list`.
+    #[arg(long = "instance", conflicts_with = "pid")]
+    pub instance: Option<String>,
+
+    /// Target a specific local Warp process id.
+    #[arg(long = "pid", conflicts_with = "instance")]
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Args)]

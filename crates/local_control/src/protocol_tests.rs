@@ -203,8 +203,69 @@ fn malformed_and_removed_action_names_are_not_deserialized() {
 }
 
 #[test]
-fn catalog_has_exactly_84_retained_actions() {
-    assert_eq!(ActionKind::ALL.len(), 84);
+fn catalog_has_exactly_85_retained_actions() {
+    assert_eq!(ActionKind::ALL.len(), 85);
+}
+
+#[test]
+fn session_send_input_params_roundtrip() {
+    let action = Action::with_params(
+        ActionKind::SessionSendInput,
+        SessionSendInputParams {
+            text: Some("git status".to_owned()),
+            submit: true,
+            expected_user_input_count: 3,
+        },
+    )
+    .expect("session.send_input params serialize");
+    assert_eq!(
+        action.params,
+        serde_json::json!({
+            "text": "git status",
+            "submit": true,
+            "expected_user_input_count": 3,
+        })
+    );
+    let params = action
+        .params_as::<SessionSendInputParams>()
+        .expect("session.send_input params decode");
+    assert_eq!(params.text.as_deref(), Some("git status"));
+    assert!(params.submit);
+    assert_eq!(params.expected_user_input_count, 3);
+
+    let submit_only = Action {
+        kind: ActionKind::SessionSendInput,
+        params: serde_json::json!({ "expected_user_input_count": 0 }),
+    };
+    let params = submit_only
+        .params_as::<SessionSendInputParams>()
+        .expect("submit-only params decode");
+    assert_eq!(params.text, None);
+    assert!(!params.submit);
+
+    let missing_count = Action {
+        kind: ActionKind::SessionSendInput,
+        params: serde_json::json!({ "text": "ls" }),
+    };
+    let error = missing_count
+        .params_as::<SessionSendInputParams>()
+        .expect_err("expected_user_input_count is required");
+    assert_eq!(error.code, ErrorCode::InvalidParams);
+}
+
+#[test]
+fn session_send_input_metadata_targets_an_explicit_session() {
+    let metadata = ActionKind::SessionSendInput.metadata();
+    assert_eq!(metadata.name, "session.send_input");
+    assert_eq!(metadata.target_scope, TargetScope::Session);
+    assert_eq!(
+        metadata.parameter_spec,
+        ActionParameterSpec::SessionSendInput
+    );
+    assert_eq!(
+        metadata.implementation_status,
+        ActionImplementationStatus::Implemented
+    );
 }
 
 #[test]
