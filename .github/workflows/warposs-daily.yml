@@ -50,17 +50,19 @@ jobs:
       need_macos: ${{ steps.plan.outputs.need_macos }}
       need_linux: ${{ steps.plan.outputs.need_linux }}
     steps:
-      # A scheduled run does nothing when the newest release is younger than 20 hours and holds both
-      # platforms, so the four daily slots publish at most one release a day and only retry after
-      # a failure. Manual runs always build.
-      - name: Skip after a recent complete release
+      # A scheduled run does nothing when a release holding both platforms was created since 00:00
+      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a day
+      # whose build failed. Counting from midnight rather than a fixed age keeps the daily build at
+      # 00:00 after a manual run during the day. Manual runs always build.
+      - name: Skip when today already has a complete release
         id: recent
         if: github.event_name == 'schedule'
         run: |
           read -r tag created < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
                                     --json tagName,createdAt --jq '.[0] | "\(.tagName) \(.createdAt)"')
           skip=false
-          if [[ -n "$tag" ]] && (( $(date -u +%s) - $(date -u -d "$created" +%s) < 20 * 3600 )); then
+          today=$(TZ=Asia/Shanghai date -d 'today 00:00' +%s)
+          if [[ -n "$tag" ]] && (( $(date -u -d "$created" +%s) >= today )); then
             assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
             if grep -qx 'WarpOss\.zip' <<< "$assets" && grep -q '\.pkg\.tar\.zst$' <<< "$assets"; then
               skip=true
