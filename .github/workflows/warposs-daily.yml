@@ -11,8 +11,10 @@ name: WarpOss daily build
 
 on:
   schedule:
-    # 18:00 UTC is 02:00 in Asia/Shanghai; machines install the release at 07:00.
-    - cron: "0 18 * * *"
+    # Every six hours: 00:00, 06:00, 12:00 and 18:00 in Asia/Shanghai. The first slot of a day
+    # builds; the later slots are retries that skip once a complete release exists, because hosted
+    # runner outages have cancelled whole runs. Machines install the release at 07:00.
+    - cron: "0 16,22,4,10 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -48,16 +50,37 @@ jobs:
       need_macos: ${{ steps.plan.outputs.need_macos }}
       need_linux: ${{ steps.plan.outputs.need_linux }}
     steps:
+      # A scheduled run does nothing when the newest release is younger than 20 hours and holds both
+      # platforms, so the four daily slots publish at most one release a day and only retry after
+      # a failure. Manual runs always build.
+      - name: Skip after a recent complete release
+        id: recent
+        if: github.event_name == 'schedule'
+        run: |
+          read -r tag created < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
+                                    --json tagName,createdAt --jq '.[0] | "\(.tagName) \(.createdAt)"')
+          skip=false
+          if [[ -n "$tag" ]] && (( $(date -u +%s) - $(date -u -d "$created" +%s) < 20 * 3600 )); then
+            assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            if grep -qx 'WarpOss\.zip' <<< "$assets" && grep -q '\.pkg\.tar\.zst$' <<< "$assets"; then
+              skip=true
+              echo "Skipping: $tag from $created already holds both platforms."
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
       # The two parents and the date are fixed here so that every later job rebuilds the same merge
       # commit even if upstream master or main moves while the builds run.
       - name: Pin merge inputs
         id: pins
+        if: steps.recent.outputs.skip != 'true'
         run: |
           echo "main=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY.git" refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "upstream=$(git ls-remote https://github.com/warpdotdev/warp.git refs/heads/master | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Check out merge action
+        if: steps.recent.outputs.skip != 'true'
         uses: actions/checkout@v5
         with:
           path: ci
@@ -66,6 +89,7 @@ jobs:
 
       - name: Merge upstream master
         id: merge
+        if: steps.recent.outputs.skip != 'true'
         uses: ./ci/.github/actions/merge-upstream
         with:
           main: ${{ steps.pins.outputs.main }}
@@ -76,6 +100,7 @@ jobs:
       # is the build date plus the number of commits on the merged main.
       - name: Plan builds
         id: plan
+        if: steps.recent.outputs.skip != 'true'
         working-directory: warp
         env:
           HEAD: ${{ steps.merge.outputs.head }}

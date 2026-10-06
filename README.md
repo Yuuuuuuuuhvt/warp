@@ -22,7 +22,7 @@ makes the window jump in fullscreen.
 
 ## Daily build
 
-`.github/workflows/warposs-daily.yml` runs at 02:00 Asia/Shanghai and can be started manually.
+`.github/workflows/warposs-daily.yml` runs every six hours, at 00:00, 06:00, 12:00 and 18:00 Asia/Shanghai, and can be started manually. A scheduled run skips when the newest release is younger than 20 hours and holds both platforms, so the later slots only retry a failed day.
 It has four jobs:
 
 1. `prepare` pins the current `main` and upstream `master` commits, merges them, and decides which
