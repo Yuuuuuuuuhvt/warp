@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 
 use ::local_control::protocol::{TabCreateParams, TabPlacement, TargetSelector};
 use ::local_control::{ErrorCode, InstanceId};
-use warpui::{App, TypedActionView, ViewHandle};
+use warpui::{App, TypedActionView, ViewHandle, WindowId};
 
 use super::{create_tab, insert_tab_config_tab, select_tab_config};
 use crate::local_control::LocalControlBridge;
 use crate::local_control::resolver::{
-    decode_params, tab_create_window_id_for_target, validate_window_create_params,
+    background_tab_config_window_id, decode_params, tab_create_window_id_for_target,
+    validate_window_create_params,
 };
 use crate::tab_configs::tab_config::{TabConfigPaneNode, TabConfigPaneType};
 use crate::tab_configs::{TabConfig, TabConfigParam, TabConfigParamType};
@@ -222,6 +223,103 @@ fn tab_create_background_fallback_reports_missing_target_without_a_workspace_win
         });
 
         assert_eq!(err.code, ErrorCode::MissingTarget);
+    });
+}
+
+#[test]
+fn background_tab_config_window_prefers_front_to_back_order() {
+    let older = WindowId::from_usize(1);
+    let newer = WindowId::from_usize(2);
+    let without_workspace = WindowId::from_usize(3);
+
+    assert_eq!(
+        background_tab_config_window_id(&[without_workspace, older, newer], &[older, newer]),
+        Some(older)
+    );
+}
+
+#[test]
+fn background_tab_config_window_falls_back_to_workspace_windows_without_order() {
+    let only = WindowId::from_usize(4);
+    let older = WindowId::from_usize(1);
+    let newer = WindowId::from_usize(2);
+    let without_workspace = WindowId::from_usize(3);
+
+    assert_eq!(background_tab_config_window_id(&[], &[only]), Some(only));
+    assert_eq!(
+        background_tab_config_window_id(&[without_workspace], &[newer, older]),
+        Some(newer)
+    );
+    assert_eq!(
+        background_tab_config_window_id(&[without_workspace], &[]),
+        None
+    );
+}
+
+/// The test platform reports no active window and no front-to-back order, which is the state of
+/// a background-launched window on KDE. The tab config must still open in that window, and only
+/// in the background.
+#[test]
+fn tab_create_background_fallback_opens_in_the_only_window_without_activating() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let window_id = app.read(|ctx| workspace.window_id(ctx));
+        let active_before =
+            workspace.read(&app, |workspace, _| workspace.active_tab_pane_group().id());
+        let focused_before = app.read(|ctx| ctx.windows().last_window_shown_and_focused_for_test());
+        let bridge = app.add_singleton_model(LocalControlBridge::new);
+
+        let resolved = bridge.update(&mut app, |_, ctx| {
+            assert_eq!(ctx.windows().active_window(), None);
+            assert!(ctx.windows().ordered_window_ids().is_empty());
+            tab_create_window_id_for_target(ctx, &TargetSelector::default(), true)
+                .expect("the only workspace window is the target")
+        });
+        assert_eq!(resolved, window_id);
+
+        let params = TabCreateParams {
+            tab_type: None,
+            tab_config: Some("background".to_owned()),
+            activate: Some(false),
+            placement: Some(TabPlacement::AfterAllTabs),
+        };
+        let inserted = workspace.update(&mut app, |workspace, ctx| {
+            insert_tab_config_tab(workspace, test_tab_config("background"), &params, ctx)
+                .expect("background tab config insert succeeds")
+        });
+        let response = app.read(|ctx| inserted.into_response(ctx));
+
+        assert!(!response.activated);
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(workspace.active_tab_pane_group().id(), active_before);
+        });
+        app.read(|ctx| {
+            assert_eq!(ctx.windows().active_window(), None);
+            assert_eq!(
+                ctx.windows().last_window_shown_and_focused_for_test(),
+                focused_before
+            );
+        });
+    });
+}
+
+#[test]
+fn tab_create_background_fallback_picks_the_newest_of_several_windows() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let older = mock_workspace(&mut app);
+        let newer = mock_workspace(&mut app);
+        let newer_window_id = app.read(|ctx| newer.window_id(ctx));
+        assert_ne!(app.read(|ctx| older.window_id(ctx)), newer_window_id);
+        let bridge = app.add_singleton_model(LocalControlBridge::new);
+
+        let resolved = bridge.update(&mut app, |_, ctx| {
+            tab_create_window_id_for_target(ctx, &TargetSelector::default(), true)
+                .expect("the newest workspace window is the target")
+        });
+
+        assert_eq!(resolved, newer_window_id);
     });
 }
 

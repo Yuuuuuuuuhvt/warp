@@ -77,10 +77,10 @@ fn validate_tab_config_name(name: &str) -> Result<(), ControlError> {
 /// Resolves the target window for a `tab.create` request.
 ///
 /// A request that opens a tab config may arrive while Warp is in the background, where no window
-/// is active. Such a request falls back to the frontmost window that hosts a workspace, matching
-/// how tab config links resolve their window, and reports `missing_target` instead of opening a
-/// window when none hosts a workspace. Requests without a tab config keep the existing window
-/// selection rules.
+/// is active. Such a request falls back to a window that hosts a workspace, chosen by
+/// [`background_tab_config_window_id`], and reports `missing_target` instead of opening a window
+/// when none hosts a workspace. Requests without a tab config keep the existing window selection
+/// rules.
 pub(crate) fn tab_create_window_id_for_target(
     ctx: &mut ModelContext<LocalControlBridge>,
     target: &TargetSelector,
@@ -92,20 +92,54 @@ pub(crate) fn tab_create_window_id_for_target(
     if !needs_background_fallback {
         return target_window_id_for_target(ctx, target, ActionKind::TabCreate);
     }
-    let window_ids = ctx.windows().ordered_window_ids();
-    window_ids
+    let ordered_window_ids = ctx.windows().ordered_window_ids();
+    let workspace_window_ids = WorkspaceRegistry::as_ref(ctx)
+        .all_workspaces(ctx)
         .into_iter()
-        .find(|window_id| {
-            WorkspaceRegistry::as_ref(ctx)
-                .get(*window_id, ctx)
-                .is_some()
-        })
+        .map(|(window_id, _)| window_id)
+        .collect::<Vec<_>>();
+    let window_id = background_tab_config_window_id(&ordered_window_ids, &workspace_window_ids)
         .ok_or_else(|| {
             ControlError::new(
                 ErrorCode::MissingTarget,
                 "tab.create found no window with a workspace to open the tab config in",
             )
-        })
+        })?;
+    // Records which rule picked the window, since the platform's window order is what differs
+    // between desktops when a background launch cannot find its target.
+    log::info!(
+        "tab.create has no active window; opening the tab config in window {window_id} \
+         (front-to-back order: {ordered_window_ids:?}, workspace windows: {workspace_window_ids:?})"
+    );
+    Ok(window_id)
+}
+
+/// Chooses the window a background `tab.create` opens its tab config in when no window is active.
+///
+/// The platform's front-to-back order comes first, because it reflects the window the user last
+/// brought forward, and tab config links resolve their window the same way. That order can lack
+/// a window that never received focus. On Linux, winit has no z-order API, so Warp maintains the
+/// order by hand from window callbacks. On KDE, a WarpOss window launched in the background by a
+/// script never received focus, because focus stealing prevention refuses a program's own focus
+/// requests, and requests failed with `missing_target` until the user clicked the window.
+///
+/// Every window that hosts a workspace is therefore a candidate as well. A single candidate is the
+/// target. Among several candidates no focus history says which one the user prefers, so the most
+/// recently created window wins: window ids grow monotonically for the life of the app, which
+/// makes the choice deterministic, and the newest window is the one a launcher that just started
+/// WarpOss most likely opened. Reporting the choice as ambiguous would leave the launcher without
+/// a tab, while a less suitable window only affects where the tab appears: choosing a window
+/// neither focuses nor raises it, and whether the new tab becomes the window's active tab is still
+/// decided by the request's `activate` parameter.
+pub(crate) fn background_tab_config_window_id(
+    ordered_window_ids: &[WindowId],
+    workspace_window_ids: &[WindowId],
+) -> Option<WindowId> {
+    ordered_window_ids
+        .iter()
+        .find(|window_id| workspace_window_ids.contains(window_id))
+        .or_else(|| workspace_window_ids.iter().max())
+        .copied()
 }
 
 pub(crate) fn validate_action_params(action: &::local_control::Action) -> Result<(), ControlError> {
