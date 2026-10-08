@@ -1,7 +1,10 @@
 use warp_graphql::billing::AddonCreditsOption;
 
-use super::{PackAmount, format_price, pack_menu_label};
-use crate::workspaces::workspace::ChargeUnit;
+use super::{
+    PackAmount, addon_credits_description, format_price, larger_packs_cost_less_per_credit,
+    pack_menu_label,
+};
+use crate::settings::UsageDisplayUnit;
 
 fn credits_pack(credits: i32, price_usd_cents: i32) -> AddonCreditsOption {
     AddonCreditsOption {
@@ -20,23 +23,23 @@ fn usage_pack(usage_cents: i32, price_usd_cents: i32) -> AddonCreditsOption {
 }
 
 #[test]
-fn pack_amount_is_usage_only_for_a_cents_plan_with_a_priced_pack() {
+fn pack_amount_is_usage_only_when_shown_in_dollars_with_a_priced_pack() {
     assert_eq!(
-        PackAmount::of(&usage_pack(1_000, 1_000), ChargeUnit::Cents),
+        PackAmount::of(&usage_pack(1_000, 1_000), UsageDisplayUnit::Dollars),
         PackAmount::UsageCents(1_000)
     );
-    // A plan charged in credits shows credits even when the catalog states usage.
+    // Shown in credits, a pack shows credits even when the catalog states usage.
     assert_eq!(
-        PackAmount::of(&usage_pack(1_000, 1_000), ChargeUnit::Credits),
+        PackAmount::of(&usage_pack(1_000, 1_000), UsageDisplayUnit::Credits),
         PackAmount::Credits(1_000)
     );
-    // A plan charged in cents falls back to credits when the catalog states no usage.
+    // Shown in dollars, a pack falls back to credits when the catalog states no usage.
     assert_eq!(
-        PackAmount::of(&credits_pack(1_000, 1_000), ChargeUnit::Cents),
+        PackAmount::of(&credits_pack(1_000, 1_000), UsageDisplayUnit::Dollars),
         PackAmount::Credits(1_000)
     );
     assert_eq!(
-        PackAmount::of(&credits_pack(1_000, 1_000), ChargeUnit::Credits),
+        PackAmount::of(&credits_pack(1_000, 1_000), UsageDisplayUnit::Credits),
         PackAmount::Credits(1_000)
     );
     assert!(PackAmount::UsageCents(1_000).is_usage());
@@ -65,17 +68,53 @@ fn price_drops_cents_only_for_whole_dollars() {
 }
 
 #[test]
+fn larger_packs_cost_less_per_credit_only_for_discounted_catalogs() {
+    assert!(larger_packs_cost_less_per_credit(&[
+        credits_pack(1_000, 1_000),
+        credits_pack(2_500, 2_000),
+    ]));
+    // Usage packs are sold at face value, so their credit equivalents are flat-rate.
+    assert!(!larger_packs_cost_less_per_credit(&[
+        usage_pack(555, 1_000),
+        usage_pack(1_111, 2_000),
+        usage_pack(2_777, 5_000),
+        usage_pack(5_555, 10_000),
+    ]));
+    assert!(!larger_packs_cost_less_per_credit(&[]));
+}
+
+#[test]
+fn description_promises_a_better_rate_only_when_the_catalog_offers_one() {
+    let discounted =
+        addon_credits_description(&[credits_pack(1_000, 1_000), credits_pack(2_500, 2_000)]);
+    assert_eq!(
+        discounted,
+        "Add-on credits are purchased in prepaid packages that roll over each billing cycle and \
+         expire after one year. The more you purchase, the better the per-credit rate. Once your \
+         base plan credits are used, add-on credits will be consumed."
+    );
+
+    let flat = addon_credits_description(&[usage_pack(555, 1_000), usage_pack(1_111, 2_000)]);
+    assert_eq!(
+        flat,
+        "Add-on credits are purchased in prepaid packages that roll over each billing cycle and \
+         expire after one year. Once your base plan credits are used, add-on credits will be \
+         consumed."
+    );
+}
+
+#[test]
 fn menu_label_shows_price_after_premium_then_amount() {
     assert_eq!(
-        pack_menu_label(&credits_pack(1_000, 1_000), 0, ChargeUnit::Credits),
+        pack_menu_label(&credits_pack(1_000, 1_000), 0, UsageDisplayUnit::Credits),
         "$10 / 1,000 credits"
     );
     assert_eq!(
-        pack_menu_label(&usage_pack(1_000, 1_000), 1_000, ChargeUnit::Cents),
+        pack_menu_label(&usage_pack(1_000, 1_000), 1_000, UsageDisplayUnit::Dollars),
         "$11 / $10 of usage"
     );
     assert_eq!(
-        pack_menu_label(&usage_pack(1_000, 1_000), 0, ChargeUnit::Credits),
+        pack_menu_label(&usage_pack(1_000, 1_000), 0, UsageDisplayUnit::Credits),
         "$10 / 1,000 credits"
     );
 }

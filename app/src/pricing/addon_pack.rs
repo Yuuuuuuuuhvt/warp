@@ -1,7 +1,13 @@
 use thousands::Separable;
 use warp_graphql::billing::AddonCreditsOption;
 
-use crate::workspaces::workspace::ChargeUnit;
+use crate::settings::UsageDisplayUnit;
+
+const ADDON_CREDITS_DESCRIPTION_LEAD: &str = "Add-on credits are purchased in prepaid packages that roll over each billing cycle and expire after one year.";
+const ADDON_CREDITS_VOLUME_DISCOUNT_NOTE: &str =
+    "The more you purchase, the better the per-credit rate.";
+const ADDON_CREDITS_DESCRIPTION_TAIL: &str =
+    "Once your base plan credits are used, add-on credits will be consumed.";
 
 /// What an add-on pack buys, in the unit it is shown in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,12 +18,14 @@ pub enum PackAmount {
 }
 
 impl PackAmount {
-    /// What `option` buys for a plan charged in `charge_unit`. A plan charged in cents still
-    /// shows a pack's credit count when the catalog states no usage for it.
-    pub fn of(option: &AddonCreditsOption, charge_unit: ChargeUnit) -> Self {
-        match (charge_unit, option.usage_cents) {
-            (ChargeUnit::Cents, Some(cents)) => Self::UsageCents(cents),
-            (ChargeUnit::Cents, None) | (ChargeUnit::Credits, _) => Self::Credits(option.credits),
+    /// What `option` buys, shown in `unit`. A pack displayed in dollars still shows its credit
+    /// count when the catalog states no usage for it.
+    pub fn of(option: &AddonCreditsOption, unit: UsageDisplayUnit) -> Self {
+        match (unit, option.usage_cents) {
+            (UsageDisplayUnit::Dollars, Some(cents)) => Self::UsageCents(cents),
+            (UsageDisplayUnit::Dollars, None) | (UsageDisplayUnit::Credits, _) => {
+                Self::Credits(option.credits)
+            }
         }
     }
 
@@ -58,13 +66,38 @@ pub fn format_price(cents: i32) -> String {
 pub fn pack_menu_label(
     option: &AddonCreditsOption,
     premium_bps: i32,
-    charge_unit: ChargeUnit,
+    unit: UsageDisplayUnit,
 ) -> String {
     format!(
         "{} / {}",
         format_price(option.price_usd_cents_with_premium(premium_bps)),
-        PackAmount::of(option, charge_unit).label()
+        PackAmount::of(option, unit).label()
     )
+}
+
+/// Whether some pack is cheaper per credit than the catalog's first (smallest) one, by the
+/// whole-percent measure the pack menus badge.
+pub fn larger_packs_cost_less_per_credit(options: &[AddonCreditsOption]) -> bool {
+    let Some(base_rate) = options.first().map(AddonCreditsOption::rate) else {
+        return false;
+    };
+    options
+        .iter()
+        .any(|option| option.discount_percent(base_rate) > 0)
+}
+
+/// The add-on credits panel's description. It promises a better per-credit rate on larger packs
+/// only when `options` actually offers one, so it stays true for flat-rate catalogs such as
+/// usage packs shown in credits.
+pub fn addon_credits_description(options: &[AddonCreditsOption]) -> String {
+    if larger_packs_cost_less_per_credit(options) {
+        format!(
+            "{ADDON_CREDITS_DESCRIPTION_LEAD} {ADDON_CREDITS_VOLUME_DISCOUNT_NOTE} \
+             {ADDON_CREDITS_DESCRIPTION_TAIL}"
+        )
+    } else {
+        format!("{ADDON_CREDITS_DESCRIPTION_LEAD} {ADDON_CREDITS_DESCRIPTION_TAIL}")
+    }
 }
 
 #[cfg(test)]
