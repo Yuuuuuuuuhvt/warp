@@ -269,12 +269,32 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
+          apt_ok=false
           for i in 1 2 3; do
-            sudo apt-get update && break || { echo "apt-get update failed, attempt $i"; sleep 5; }
+            if sudo apt-get update; then
+              apt_ok=true
+              break
+            fi
+            echo "apt-get update failed, attempt $i"
+            sleep 5
           done
+          if [ "$apt_ok" != "true" ]; then
+            echo "::warning::apt-get update failed after 3 attempts"
+          fi
+
+          deps_ok=false
           for i in 1 2 3; do
-            script/linux/install_build_deps && break || { echo "install_build_deps failed, attempt $i"; sleep 5; }
+            if script/linux/install_build_deps; then
+              deps_ok=true
+              break
+            fi
+            echo "install_build_deps failed, attempt $i"
+            sleep 5
           done
+          if [ "$deps_ok" != "true" ]; then
+            echo "::error::install_build_deps failed after 3 attempts"
+            exit 1
+          fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
           # Installs the toolchain pinned by rust-toolchain.toml.
