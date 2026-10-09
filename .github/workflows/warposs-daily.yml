@@ -129,9 +129,10 @@ jobs:
   macos:
     needs: prepare
     if: needs.prepare.outputs.need_macos == 'true'
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, X64, warp-macvm]
     timeout-minutes: 345
     env:
+      CARGO_BUILD_JOBS: 4
       SIGNING_IDENTITY: WarpOss Local Code Signing
       # Root certificate hash in the designated requirement; it must stay stable so macOS keeps
       # the permissions it granted to earlier builds.
@@ -164,12 +165,16 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          if [ -d "/Applications/Xcode_26.6.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app 2>/dev/null || true
+          fi
           xcodebuild -version
-          xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -downloadComponent MetalToolchain || true
           # Installs the toolchain pinned by rust-toolchain.toml.
           rustup toolchain install
-          brew install protobuf create-dmg
+          if command -v brew >/dev/null 2>&1; then
+            brew install protobuf create-dmg
+          fi
           script/install_cargo_bundle
           script/install_cargo_release_deps
 
@@ -178,6 +183,7 @@ jobs:
         with:
           workspaces: warp
           key: warposs
+          cache-bin: false
 
       - name: Test patched behaviour
         working-directory: warp
@@ -234,15 +240,11 @@ jobs:
   linux:
     needs: prepare
     if: needs.prepare.outputs.need_linux == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, warp-tx]
     timeout-minutes: 345
+    env:
+      CARGO_BUILD_JOBS: 8
     steps:
-      # The release build and its dependencies need more than the free space of a fresh runner.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
-
       - name: Check out merge action
         uses: actions/checkout@v5
         with:
@@ -269,31 +271,31 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
-          apt_ok=false
-          for i in 1 2 3; do
-            if sudo apt-get update; then
-              apt_ok=true
-              break
+          if command -v pacman >/dev/null 2>&1; then
+            echo "TX (Arch Linux): packages already present"
+          else
+            apt_ok=false
+            for i in 1 2 3; do
+              if sudo apt-get update; then
+                apt_ok=true
+                break
+              fi
+              echo "apt-get update failed, attempt $i"
+              sleep 5
+            done
+            deps_ok=false
+            for i in 1 2 3; do
+              if script/linux/install_build_deps; then
+                deps_ok=true
+                break
+              fi
+              echo "install_build_deps failed, attempt $i"
+              sleep 5
+            done
+            if [ "$deps_ok" != "true" ]; then
+              echo "::error::install_build_deps failed after 3 attempts"
+              exit 1
             fi
-            echo "apt-get update failed, attempt $i"
-            sleep 5
-          done
-          if [ "$apt_ok" != "true" ]; then
-            echo "::warning::apt-get update failed after 3 attempts"
-          fi
-
-          deps_ok=false
-          for i in 1 2 3; do
-            if script/linux/install_build_deps; then
-              deps_ok=true
-              break
-            fi
-            echo "install_build_deps failed, attempt $i"
-            sleep 5
-          done
-          if [ "$deps_ok" != "true" ]; then
-            echo "::error::install_build_deps failed after 3 attempts"
-            exit 1
           fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -307,6 +309,7 @@ jobs:
         with:
           workspaces: warp
           key: warposs-linux
+          cache-bin: false
 
       # No package format is requested here: the binary is built on Ubuntu, and the Arch package
       # is assembled in an Arch container, because makepkg only exists on Arch. The binary links
