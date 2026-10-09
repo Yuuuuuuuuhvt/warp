@@ -167,7 +167,7 @@ use repo_metadata::{
 };
 use server::network_log_pane_manager::NetworkLogPaneManager;
 use server::telemetry::context_provider::AppTelemetryContextProvider;
-use server::voice_transcriber::ServerVoiceTranscriber;
+use voice::transcriber::LocalVoiceTranscriber;
 #[cfg(feature = "local_fs")]
 use settings::import::model::ImportedConfigModel;
 use settings_view::pane_manager::SettingsPaneManager;
@@ -2169,7 +2169,7 @@ pub(crate) fn initialize_app(
     #[cfg(feature = "voice_input")]
     ctx.add_singleton_model(voice_input::VoiceInput::new);
     ctx.add_singleton_model(|_| {
-        VoiceTranscriber::new(Arc::new(ServerVoiceTranscriber::new(server_api.clone())))
+        VoiceTranscriber::new(Arc::new(LocalVoiceTranscriber::new()))
     });
 
     let notebooks = cloud_objects

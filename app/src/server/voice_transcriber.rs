@@ -8,10 +8,12 @@ use super::team_scope::RequestTeamScope;
 use crate::ai::voice::transcribe::{Provider, TranscribeRequest};
 use crate::voice::transcriber::Transcriber;
 
+#[allow(dead_code)]
 pub struct ServerVoiceTranscriber {
     server_api: Arc<ServerApi>,
 }
 
+#[allow(dead_code)]
 impl ServerVoiceTranscriber {
     pub fn new(server_api: Arc<ServerApi>) -> Self {
         Self { server_api }

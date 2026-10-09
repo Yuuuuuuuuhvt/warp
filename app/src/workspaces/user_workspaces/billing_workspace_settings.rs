@@ -138,17 +138,8 @@ impl UserWorkspaces {
     /// Note that the value may be incorrect if called before the team's billing metadata has been fetched.
     /// If voice input support is not compiled into this build, always returns `false`.
     pub fn is_voice_enabled(&self) -> bool {
+        // In WarpOss builds, voice input is decoupled from team billing policies.
         cfg!(feature = "voice_input")
-            && self
-                .current_workspace()
-                // If the user has no team, they can toggle Voice (no restrictions).
-                .is_none_or(|workspace| {
-                    workspace
-                        .billing_metadata
-                        .tier
-                        .warp_ai_policy
-                        .is_some_and(|policy| policy.is_voice_enabled)
-                })
     }
 
     /// Whether BYO API key is enabled for the current user, based on the active policies.

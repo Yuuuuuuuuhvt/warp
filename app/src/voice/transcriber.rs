@@ -55,3 +55,59 @@ impl Entity for VoiceTranscriber {
 }
 
 impl SingletonEntity for VoiceTranscriber {}
+
+/// Local voice transcriber for WarpOss.
+///
+/// Serves as an in-process local transcriber placeholder that returns
+/// a clear error indicating the local speech model or runtime engine has not been installed yet,
+/// without calling any remote server.
+#[derive(Debug, Default)]
+pub struct LocalVoiceTranscriber;
+
+impl LocalVoiceTranscriber {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl Transcriber for LocalVoiceTranscriber {
+    async fn transcribe(
+        &self,
+        _wav_base64: String,
+        _language: Option<String>,
+        _team_scope: RequestTeamScope,
+    ) -> Result<String, TranscribeError> {
+        Err(TranscribeError::Other(anyhow::anyhow!(
+            "Local voice transcription engine is not installed yet"
+        )))
+    }
+}
+
+impl Entity for LocalVoiceTranscriber {
+    type Event = ();
+}
+
+impl SingletonEntity for LocalVoiceTranscriber {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspaces::user_workspaces::team_workspace_settings::TeamlessScopeForTest;
+
+    #[tokio::test]
+    async fn test_local_voice_transcriber_returns_not_installed_error() {
+        let transcriber = LocalVoiceTranscriber::new();
+        let result = transcriber
+            .transcribe(
+                "UklGRg==".to_string(),
+                None,
+                RequestTeamScope::from_scope(&TeamlessScopeForTest),
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not installed yet"));
+    }
+}
