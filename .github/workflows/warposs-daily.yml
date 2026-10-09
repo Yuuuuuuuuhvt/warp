@@ -269,7 +269,12 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
-          script/linux/install_build_deps
+          for i in 1 2 3; do
+            sudo apt-get update && break || { echo "apt-get update failed, attempt $i"; sleep 5; }
+          done
+          for i in 1 2 3; do
+            script/linux/install_build_deps && break || { echo "install_build_deps failed, attempt $i"; sleep 5; }
+          done
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.cargo/bin:$PATH"
           # Installs the toolchain pinned by rust-toolchain.toml.
