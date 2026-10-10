@@ -175,12 +175,20 @@ jobs:
           script/install_cargo_bundle
           script/install_cargo_release_deps --no-build-deps
 
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: warp
-          key: warposs-macos
-          cache-bin: false
+      # Clean target directory if it exceeds the disk budget to prevent unbounded growth.
+      # The VM has ~52 GB free disk space. Normal artifacts (debug + release-lto) take ~8 GB.
+      # If target exceeds 20 GB (20971520 KB), clean it before building to leave >= 30 GB free.
+      - name: Check build cache size
+        working-directory: warp
+        run: |
+          if [ -d target ]; then
+            size_kb=$(du -sk target | cut -f1)
+            echo "Current target size: $((size_kb / 1024)) MB"
+            if [ "$size_kb" -gt 20971520 ]; then
+              echo "Target size exceeds 20 GB limit, running cargo clean..."
+              cargo clean
+            fi
+          fi
 
       - name: Test patched behaviour
         working-directory: warp
@@ -305,12 +313,20 @@ jobs:
           # cargo-about generates the third-party license file that goes into the package.
           script/install_cargo_release_deps --no-build-deps
 
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: warp
-          key: warposs-linux
-          cache-bin: false
+      # Clean target directory if it exceeds the disk budget to prevent unbounded growth.
+      # TX has 400+ GB free NVMe space. Normal build target is ~5-10 GB.
+      # If target exceeds 25 GB (26214400 KB), clean it before building.
+      - name: Check build cache size
+        working-directory: warp
+        run: |
+          if [ -d target ]; then
+            size_kb=$(du -sk target | cut -f1)
+            echo "Current target size: $((size_kb / 1024)) MB"
+            if [ "$size_kb" -gt 26214400 ]; then
+              echo "Target size exceeds 25 GB limit, running cargo clean..."
+              cargo clean
+            fi
+          fi
 
       # No package format is requested here: the binary is built on Ubuntu, and the Arch package
       # is assembled in an Arch container, because makepkg only exists on Arch. The binary links
