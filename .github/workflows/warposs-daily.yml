@@ -130,9 +130,10 @@ jobs:
   macos:
     needs: prepare
     if: needs.prepare.outputs.need_macos == 'true'
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, X64, warp-macvm]
     timeout-minutes: 345
     env:
+      CARGO_BUILD_JOBS: 8
       SIGNING_IDENTITY: WarpOss Local Code Signing
       # Root certificate hash in the designated requirement; it must stay stable so macOS keeps
       # the permissions it granted to earlier builds.
@@ -166,20 +167,20 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
-          xcodebuild -version
-          xcodebuild -downloadComponent MetalToolchain
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
           # Installs the toolchain pinned by rust-toolchain.toml.
           rustup toolchain install
-          brew install protobuf create-dmg
+          rustup target add aarch64-apple-darwin
           script/install_cargo_bundle
-          script/install_cargo_release_deps
+          script/install_cargo_release_deps --no-build-deps
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: warp
-          key: warposs
+          key: warposs-macos
+          cache-bin: false
 
       - name: Test patched behaviour
         working-directory: warp
@@ -193,7 +194,9 @@ jobs:
         working-directory: warp
         # warp-agents drives WarpOss through local control (warpctrl), which upstream enables only
         # on the dev channel. The Scripting setting still defaults to off on each machine.
-        run: ./script/macos/bundle --channel oss --nouniversal --nosign --features warp_control_cli
+        run: |
+          export SETTINGS_SCHEMA_SOURCE="$HOME/.local/share/warp/settings_schema.json"
+          ./script/macos/bundle --channel oss --arch aarch64 --nosign --features warp_control_cli
 
       - name: Sign WarpOss
         working-directory: warp
