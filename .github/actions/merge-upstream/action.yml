@@ -53,7 +53,7 @@ runs:
       run: |
         git config user.name "WarpOss daily build"
         git config user.email "warposs-build@users.noreply.github.com"
-        git remote add upstream https://github.com/warpdotdev/warp.git
+        git remote set-url upstream https://github.com/warpdotdev/warp.git 2>/dev/null || git remote add upstream https://github.com/warpdotdev/warp.git
         git fetch --filter=blob:none upstream "$UPSTREAM"
         if ! git merge --no-ff -m "$MESSAGE" "$UPSTREAM"; then
           git merge --abort
