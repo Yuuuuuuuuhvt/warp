@@ -129,10 +129,9 @@ jobs:
   macos:
     needs: prepare
     if: needs.prepare.outputs.need_macos == 'true'
-    runs-on: [self-hosted, macOS, X64, warp-macvm]
+    runs-on: macos-26
     timeout-minutes: 345
     env:
-      CARGO_BUILD_JOBS: 4
       SIGNING_IDENTITY: WarpOss Local Code Signing
       # Root certificate hash in the designated requirement; it must stay stable so macOS keeps
       # the permissions it granted to earlier builds.
@@ -165,16 +164,12 @@ jobs:
       - name: Install toolchains
         working-directory: warp
         run: |
-          if [ -d "/Applications/Xcode_26.6.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_26.6.app 2>/dev/null || true
-          fi
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           xcodebuild -version
-          xcodebuild -downloadComponent MetalToolchain || true
+          xcodebuild -downloadComponent MetalToolchain
           # Installs the toolchain pinned by rust-toolchain.toml.
           rustup toolchain install
-          if command -v brew >/dev/null 2>&1; then
-            brew install protobuf create-dmg
-          fi
+          brew install protobuf create-dmg
           script/install_cargo_bundle
           script/install_cargo_release_deps
 
@@ -183,7 +178,6 @@ jobs:
         with:
           workspaces: warp
           key: warposs
-          cache-bin: false
 
       - name: Test patched behaviour
         working-directory: warp
