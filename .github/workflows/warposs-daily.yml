@@ -97,6 +97,7 @@ jobs:
           main: ${{ steps.pins.outputs.main }}
           upstream: ${{ steps.pins.outputs.upstream }}
           date: ${{ steps.pins.outputs.date }}
+          message: "Merge upstream master [skip ci]"
 
       # The Arch package version must increase with every build and cannot contain a hyphen, so it
       # is the build date plus the number of commits on the merged main.
@@ -151,6 +152,7 @@ jobs:
           upstream: ${{ needs.prepare.outputs.upstream }}
           date: ${{ needs.prepare.outputs.date }}
           expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
 
       # The embedded input classifier models are Git LFS objects. They come from upstream's LFS
       # storage so the daily build does not spend the fork's LFS bandwidth quota.
@@ -253,6 +255,7 @@ jobs:
           upstream: ${{ needs.prepare.outputs.upstream }}
           date: ${{ needs.prepare.outputs.date }}
           expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
 
       - name: Fetch LFS models
         working-directory: warp
@@ -384,6 +387,7 @@ jobs:
           upstream: ${{ needs.prepare.outputs.upstream }}
           date: ${{ needs.prepare.outputs.date }}
           expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
 
       - name: Download artifacts
         uses: actions/download-artifact@v5
@@ -395,6 +399,7 @@ jobs:
       # Merging upstream brings in upstream's workflow file changes, which GITHUB_TOKEN may never
       # push, so the merged main is pushed with the fine-grained sync token. LFS objects stay in
       # upstream's storage; the fork does not need copies of them.
+      # The merge commit message contains [skip ci] to prevent triggering inherited workflows on main.
       - name: Push merged main
         if: needs.prepare.outputs.head != needs.prepare.outputs.main
         working-directory: warp
@@ -415,7 +420,7 @@ jobs:
           if [[ "$RELEASE_EXISTS" == "true" ]]; then
             gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --target main \
+            gh release create "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --target "$HEAD" \
               --title "WarpOss $TAG" \
               --notes "Built from main@$HEAD, which merges warpdotdev/warp@$UPSTREAM."
           fi
