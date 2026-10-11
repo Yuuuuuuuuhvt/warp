@@ -269,6 +269,12 @@ jobs:
     timeout-minutes: 345
     env:
       CARGO_BUILD_JOBS: 8
+      # A dedicated cargo home keeps this pipeline's registry and git dependency caches out of
+      # the shared ~/.cargo: builds of other repositories on this machine, such as aria, end
+      # with cargo's automatic cache garbage collection, which has deleted the shared git
+      # dependency databases and forced a full refetch on the next run of this workflow. The
+      # directory sits in this runner's own root, away from other runners.
+      CARGO_HOME: /home/yurun/actions-runner/warp/cargo-home
     steps:
       - name: Check out merge action
         uses: actions/checkout@v5
@@ -374,7 +380,8 @@ jobs:
           # Bundling runs cargo about, so the runner's Rust installation is mounted at the same
           # path; its binaries run on Arch because Arch's glibc is newer than Ubuntu's.
           docker run --rm -v "$PWD:/work" -w /work -e VERSION -e RUNNER_UID="$(id -u)" \
-            -v "$HOME/.cargo:$HOME/.cargo" -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
+            -v "$CARGO_HOME:$CARGO_HOME" -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
+            -e CARGO_HOME \
             archlinux:base-devel bash -euxc '
               pacman -Syu --noconfirm sudo cargo
               useradd -m -u "$RUNNER_UID" builder
@@ -389,8 +396,8 @@ jobs:
               # bundle_arch passes --noconfirm to makepkg when it sees GITHUB_ACTIONS; its
               # GITHUB_OUTPUT writes are discarded.
               sudo -u builder env GITHUB_ACTIONS=true GITHUB_OUTPUT=/dev/null \
-                CARGO_HOME="$HOST_HOME/.cargo" RUSTUP_HOME="$HOST_HOME/.rustup" \
-                PATH="$HOST_HOME/.cargo/bin:$PATH" \
+                CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$HOST_HOME/.rustup" \
+                PATH="$CARGO_HOME/bin:$HOST_HOME/.cargo/bin:$PATH" \
                 SETTINGS_SCHEMA_SOURCE=/work/target/release-lto/settings_schema.json \
                 script/linux/bundle --skip-build --channel oss --packages arch --release-tag "$VERSION"
             '
