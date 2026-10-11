@@ -30,6 +30,12 @@ runs:
   steps:
     # The fork is public, so main is read without a token. The sync token is handed to git only
     # in the push step, keeping it away from the third-party build scripts that run before it.
+    # clean: false keeps the cargo target directory across runs on the self-hosted executors so
+    # later builds compile incrementally; checkout otherwise runs `git clean -ffdx` and deletes
+    # it. The build jobs in warposs-daily.yml remove every other untracked file before this
+    # action runs, and checkout's own `git checkout --force` still resets tracked files, so the
+    # merge below sees the same source state as a fresh clone. On the hosted prepare/publish
+    # runners the workspace is always fresh, so this changes nothing there.
     - name: Check out main
       uses: actions/checkout@v5
       with:
@@ -38,6 +44,7 @@ runs:
         fetch-depth: 0
         filter: blob:none
         persist-credentials: false
+        clean: false
 
     - name: Merge upstream master
       id: merge

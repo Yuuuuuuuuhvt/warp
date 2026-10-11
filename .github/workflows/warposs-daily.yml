@@ -146,6 +146,16 @@ jobs:
           sparse-checkout: .github/actions
           persist-credentials: false
 
+      # The merge action's checkout now keeps target across runs (clean: false), so remove
+      # every other untracked file the previous run left behind before the merge: a leftover
+      # could otherwise block the merge if upstream adds a file at the same path. The guard
+      # covers a fresh executor where the checkout does not exist yet.
+      - name: Clean source tree except target
+        run: |
+          if [ -d warp/.git ]; then
+            git -C warp clean -ffdx -e target/
+          fi
+
       - name: Merge upstream master
         uses: ./ci/.github/actions/merge-upstream
         with:
@@ -175,17 +185,22 @@ jobs:
           script/install_cargo_bundle
           script/install_cargo_release_deps --no-build-deps
 
-      # Clean target directory if it exceeds the disk budget to prevent unbounded growth.
-      # The VM has ~52 GB free disk space. Normal artifacts (debug + release-lto) take ~8 GB.
-      # If target exceeds 20 GB (20971520 KB), clean it before building to leave >= 30 GB free.
+      # Clean target if it exceeds the disk budget, so artifacts kept between runs cannot grow
+      # without bound. One full build leaves ~24.5 GB of target (measured 2026-10-10: debug test
+      # binaries 12.2 GB, aarch64-apple-darwin 8.1 GB, host release-lto 4.2 GB) on a 128 GB VM
+      # disk that then has ~35 GB free. The 30 GB limit (31457280 KB) is one full build plus
+      # ~20% headroom for dependency growth and still leaves ~29 GB free for the system. A Rust
+      # toolchain upgrade rebuilds every crate beside the old artifacts, so a single build can
+      # add up to one more full build's worth before this check cleans on the following run;
+      # free space stays >= 5 GB even in that case.
       - name: Check build cache size
         working-directory: warp
         run: |
           if [ -d target ]; then
             size_kb=$(du -sk target | cut -f1)
             echo "Current target size: $((size_kb / 1024)) MB"
-            if [ "$size_kb" -gt 20971520 ]; then
-              echo "Target size exceeds 20 GB limit, running cargo clean..."
+            if [ "$size_kb" -gt 31457280 ]; then
+              echo "Target size exceeds 30 GB limit, running cargo clean..."
               cargo clean
             fi
           fi
@@ -260,6 +275,16 @@ jobs:
           sparse-checkout: .github/actions
           persist-credentials: false
 
+      # The merge action's checkout now keeps target across runs (clean: false), so remove
+      # every other untracked file the previous run left behind before the merge: a leftover
+      # could otherwise block the merge if upstream adds a file at the same path. The guard
+      # covers a fresh executor where the checkout does not exist yet.
+      - name: Clean source tree except target
+        run: |
+          if [ -d warp/.git ]; then
+            git -C warp clean -ffdx -e target/
+          fi
+
       - name: Merge upstream master
         uses: ./ci/.github/actions/merge-upstream
         with:
@@ -313,9 +338,11 @@ jobs:
           # cargo-about generates the third-party license file that goes into the package.
           script/install_cargo_release_deps --no-build-deps
 
-      # Clean target directory if it exceeds the disk budget to prevent unbounded growth.
-      # TX has 400+ GB free NVMe space. Normal build target is ~5-10 GB.
-      # If target exceeds 25 GB (26214400 KB), clean it before building.
+      # Clean target if it exceeds the disk budget, so artifacts kept between runs cannot grow
+      # without bound. One full build leaves ~9.4 GB of target (measured 2026-10-10; this job
+      # runs no tests, so only release-lto artifacts appear). The 25 GB limit (26214400 KB) is
+      # ~2.7x a full build; TX has 400+ GB of free NVMe, so the limit only needs to guard
+      # against unbounded growth, and exceeding it costs one full ~11 minute rebuild.
       - name: Check build cache size
         working-directory: warp
         run: |
