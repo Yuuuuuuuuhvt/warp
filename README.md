@@ -20,36 +20,20 @@ makes the window jump in fullscreen.
 | `feat/*`, `fix/*` | One change each, based on `main` and also usable for upstream pull requests. |
 | `self-build` | This branch: the workflow that keeps `main` in sync and builds it. |
 
-## Daily build
+## 每日构建与发布
 
-`.github/workflows/warposs-daily.yml` runs every six hours, at 00:00, 06:00, 12:00 and 18:00 Asia/Shanghai, and can be started manually. A scheduled run skips when a release holding both platforms was created since 00:00 Asia/Shanghai that day, so the 00:00 slot always builds and the later slots only retry a failed day.
-It has four jobs:
+TX 的定时任务每六小时触发 `.github/workflows/warposs-daily.yml`，时间为北京时间 00:00、06:00、12:00、18:00。工作流本身没有 schedule 触发器，也可手动执行 workflow_dispatch。当天已有全部平台的包与校验文件时跳过；force 输入强制重建。
 
-1. `prepare` pins the current `main` and upstream `master` commits, merges them, and decides which
-   platforms still lack an artifact in the release of the merged commit.
-2. `macos` rebuilds the same merge, runs the workspace and URI tests, builds the OSS channel app and
-   signs it with a self-signed code signing identity.
-3. `linux` rebuilds the same merge on Ubuntu with upstream's Linux build script, then assembles an
-   Arch package `warp-terminal-oss-<date>.<main commit count>-1-x86_64.pkg.tar.zst` in an
-   `archlinux:base-devel` container, because `makepkg` only exists on Arch. The package is not
-   signed and the Linux job does not run the tests, which `macos` already ran on the same commit.
-4. `publish` runs when at least one platform built. It pushes the merged `main`, then creates the
-   release `warposs-<date>-<main sha>` or adds the missing artifacts to it: `WarpOss.zip`, the
-   Arch package and a SHA-256 file for each.
+1. prepare 固定 main 与 upstream master 的提交及合并时间，所有构建重建同一合并提交。它读取 main 中的 `script/linux/oss/platforms.json`，为尚缺产物或校验文件的发行版生成 Linux 构建矩阵。
+2. macos 在既有 macOS 自托管执行器测试并构建 OSS 应用，再使用固定证书签名。
+3. linux 在 TX 自托管执行器执行 `script/linux/bundle_oss <平台> <版本>`。Arch 在宿主原生编译、Arch 容器打包；Ubuntu 在 Ubuntu 24.04 容器内编译并生成 .deb，避免依赖 Arch 的 glibc。Ubuntu 与 Arch 的 Cargo 和 target 缓存相互独立，每个平台的 release-lto 超过 25 GiB 时才清理。构建复用执行器已有 HTTP 代理，不向容器传递发布凭据。
+4. publish 下载成功产物，核验非空且全部 SHA-256 一致后，推送合并后的 main 并创建或补齐 `warposs-<日期>-<main 提交>` 发布。Linux 矩阵中部分失败不会阻止成功发行版的产物发布。
 
-The platforms are independent. A failure on one does not stop the other from being published, and
-the next run builds the missing platform for the same `main` commit and adds it to the existing
-release. A merge conflict stops the run in `prepare`, before anything is built or pushed. Only
-`publish` pushes `main`, so `main` always points at a commit that has a release.
+发布附件包括 `WarpOss.zip`、`warp-terminal-oss-<版本>-1-x86_64.pkg.tar.zst`、`warp-terminal-oss_<版本>_amd64.deb` 及每个包对应的 `.sha256`。包版本为 UTC 构建日期加 main 提交总数。Ubuntu 包在发布前检查包名、版本、架构、root 属主及动态库依赖，并从实际二进制生成最低共享库版本约束。OSS 的 .deb 不登记官方 Warp apt 源。
 
-Every job rebuilds the merge commit from the pinned parents and dates and fails if its hash differs
-from the one `prepare` produced, so both platforms are built from one commit even though the merge
-is pushed only after the builds.
+Linux 包没有独立签名，安装方通过 GitHub HTTPS 获取包并核对校验和。合并冲突在 prepare 阶段停止。缺少本平台产物时，设备保留已安装版本；下一次运行会补建缺失附件。源码修改直接合入 main，工作流修改更新 self-build，不能把 self-build 整体合入 main。
 
-A failing test or build fails the run; GitHub emails the failure and machines keep the previous
-release. Resolve a conflict by merging upstream `master` into `main` locally, running the tests and
-pushing `main`, then start the workflow manually. The `force` input rebuilds both platforms and
-replaces the artifacts of an existing release.
+源码仓库现有 `script/linux/test_bundle_warpctrl` 在 Ubuntu 上同时检查 .deb 维护脚本和依赖元数据。完整发布验收还需要执行真实构建、在目标 Ubuntu 安装，并确认图形窗口与常驻开销；单独通过脚本测试不能替代实机验收。
 
 ## Developing a change
 

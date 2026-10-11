@@ -1,5 +1,5 @@
 # Merges upstream warpdotdev/warp master into this fork's main, builds WarpOss for macOS and Linux,
-# pushes the merged main and publishes one release holding both platforms' artifacts.
+# pushes the merged main and publishes one release holding all platforms' artifacts.
 #
 # Job order: prepare -> macos and linux in parallel -> publish. The build jobs only upload
 # artifacts. The publish job is the only one that pushes main or touches the release, and it runs
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Build both platforms even if the merged main already has them in a release
+        description: Build all platforms even if the merged main already has them in a release
         type: boolean
         default: false
 
@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Asset names are the contract with scripts/ai-tools/warp_oss_update.py in the libretto repository.
+  # Asset names are the contract with scripts/update/warp_oss_update.py in the recitativo repository.
   MACOS_ASSET: WarpOss.zip
 
 jobs:
@@ -50,41 +50,18 @@ jobs:
       release_exists: ${{ steps.plan.outputs.release_exists }}
       need_macos: ${{ steps.plan.outputs.need_macos }}
       need_linux: ${{ steps.plan.outputs.need_linux }}
+      linux_matrix: ${{ steps.plan.outputs.linux_matrix }}
     steps:
-      # A run does nothing when a release holding both platforms was created since 00:00
-      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a
-      # day whose build failed. Counting from midnight rather than a fixed age keeps the daily
-      # build at 00:00 after a manual run during the day. A forced run always builds, so the
-      # check is skipped when the force input is set.
-      - name: Skip when today already has a complete release
-        id: recent
-        if: ${{ !inputs.force }}
-        run: |
-          read -r tag created < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
-                                    --json tagName,createdAt --jq '.[0] | "\(.tagName) \(.createdAt)"')
-          skip=false
-          today=$(TZ=Asia/Shanghai date -d 'today 00:00' +%s)
-          if [[ -n "$tag" ]] && (( $(date -u -d "$created" +%s) >= today )); then
-            assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-            if grep -qx 'WarpOss\.zip' <<< "$assets" && grep -q '\.pkg\.tar\.zst$' <<< "$assets"; then
-              skip=true
-              echo "Skipping: $tag from $created already holds both platforms."
-            fi
-          fi
-          echo "skip=$skip" >> "$GITHUB_OUTPUT"
-
       # The two parents and the date are fixed here so that every later job rebuilds the same merge
       # commit even if upstream master or main moves while the builds run.
       - name: Pin merge inputs
         id: pins
-        if: steps.recent.outputs.skip != 'true'
         run: |
           echo "main=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY.git" refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "upstream=$(git ls-remote https://github.com/warpdotdev/warp.git refs/heads/master | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Check out merge action
-        if: steps.recent.outputs.skip != 'true'
         uses: actions/checkout@v5
         with:
           path: ci
@@ -93,13 +70,45 @@ jobs:
 
       - name: Merge upstream master
         id: merge
-        if: steps.recent.outputs.skip != 'true'
         uses: ./ci/.github/actions/merge-upstream
         with:
           main: ${{ steps.pins.outputs.main }}
           upstream: ${{ steps.pins.outputs.upstream }}
           date: ${{ steps.pins.outputs.date }}
           message: "Merge upstream master [skip ci]"
+
+      # A run does nothing when a release holding all platforms was created since 00:00
+      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a
+      # day whose build failed. Counting from midnight rather than a fixed age keeps the daily
+      # build at 00:00 after a manual run during the day. A forced run always builds, so the
+      # check is skipped when the force input is set.
+      - name: Skip when today already has a complete release
+        id: recent
+        working-directory: warp
+        if: ${{ !inputs.force }}
+        run: |
+          read -r tag created < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
+                                    --json tagName,createdAt --jq '.[0] | "\(.tagName) \(.createdAt)"')
+          skip=false
+          today=$(TZ=Asia/Shanghai date -d 'today 00:00' +%s)
+          if [[ -n "$tag" ]] && (( $(date -u -d "$created" +%s) >= today )); then
+            assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            complete=$(jq --arg assets "$assets" '
+              $assets | split("\n") as $names |
+              ($names | index("WarpOss.zip")) != null and
+              ($names | index("WarpOss.zip.sha256")) != null' <<< null)
+            linux_complete=$(jq --arg assets "$assets" '
+              ($assets | split("\n")) as $names |
+              [.[] | .suffix as $suffix |
+                any($names[]; . as $name | endswith($suffix) and
+                  ($names | index($name + ".sha256")) != null)] | all' \
+              script/linux/oss/platforms.json)
+            if [[ "$complete" == true && "$linux_complete" == true ]]; then
+              skip=true
+              echo "Skipping: $tag from $created already holds all platforms."
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
       # The Arch package version must increase with every build and cannot contain a hyphen, so it
       # is the build date plus the number of commits on the merged main.
@@ -123,9 +132,17 @@ jobs:
             tag="warposs-$(date -u -d "@$DATE" +%Y%m%d)-$short"
             echo "release_exists=false" >> "$GITHUB_OUTPUT"
           fi
-          need() { [[ "$FORCE" == "true" ]] || ! grep -q -- "$1" <<< "$assets"; }
-          need '^WarpOss\.zip$' && echo "need_macos=true" >> "$GITHUB_OUTPUT" || echo "need_macos=false" >> "$GITHUB_OUTPUT"
-          need '\.pkg\.tar\.zst$' && echo "need_linux=true" >> "$GITHUB_OUTPUT" || echo "need_linux=false" >> "$GITHUB_OUTPUT"
+          need() { [[ "$FORCE" == "true" ]] || ! grep -qx -- "$1" <<< "$assets" || ! grep -qx -- "$1.sha256" <<< "$assets"; }
+          need 'WarpOss\.zip' && echo "need_macos=true" >> "$GITHUB_OUTPUT" || echo "need_macos=false" >> "$GITHUB_OUTPUT"
+          matrix=$(jq -c --arg assets "$assets" --arg force "$FORCE" '
+            {include: [to_entries[] | select($force == "true" or
+              (.value.suffix as $suffix | $assets | split("\n") as $names |
+                any($names[]; . as $name | endswith($suffix) and
+                  ($names | index($name + ".sha256")) != null) | not)) |
+              {platform: .key, target: .value.target, archive: .value.archive}]}
+            ' script/linux/oss/platforms.json)
+          echo "linux_matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "need_linux=$(jq '.include | length > 0' <<< "$matrix")" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$(date -u -d "@$DATE" +%Y%m%d).$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -265,6 +282,9 @@ jobs:
   linux:
     needs: prepare
     if: needs.prepare.outputs.need_linux == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.linux_matrix) }}
     runs-on: [self-hosted, Linux, X64, warp-tx]
     timeout-minutes: 345
     env:
@@ -309,112 +329,22 @@ jobs:
           git lfs fetch upstream --include="crates/input_classifier/models/**"
           git lfs checkout
 
-      # Upstream's own Debian dependency installer, the Linux path it supports in CI.
-      - name: Install toolchains
-        working-directory: warp
-        run: |
-          if command -v pacman >/dev/null 2>&1; then
-            echo "TX (Arch Linux): packages already present"
-          else
-            apt_ok=false
-            for i in 1 2 3; do
-              if sudo apt-get update; then
-                apt_ok=true
-                break
-              fi
-              echo "apt-get update failed, attempt $i"
-              sleep 5
-            done
-            deps_ok=false
-            for i in 1 2 3; do
-              if script/linux/install_build_deps; then
-                deps_ok=true
-                break
-              fi
-              echo "install_build_deps failed, attempt $i"
-              sleep 5
-            done
-            if [ "$deps_ok" != "true" ]; then
-              echo "::error::install_build_deps failed after 3 attempts"
-              exit 1
-            fi
-          fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
-          # Installs the toolchain pinned by rust-toolchain.toml.
-          rustup toolchain install
-          # cargo-about generates the third-party license file that goes into the package.
-          script/install_cargo_release_deps --no-build-deps
-
-      # Clean target if it exceeds the disk budget, so artifacts kept between runs cannot grow
-      # without bound. One full build leaves ~9.4 GB of target (measured 2026-10-10; this job
-      # runs no tests, so only release-lto artifacts appear). The 25 GB limit (26214400 KB) is
-      # ~2.7x a full build; TX has 400+ GB of free NVMe, so the limit only needs to guard
-      # against unbounded growth, and exceeding it costs one full ~11 minute rebuild.
-      - name: Check build cache size
-        working-directory: warp
-        run: |
-          if [ -d target ]; then
-            size_kb=$(du -sk target | cut -f1)
-            echo "Current target size: $((size_kb / 1024)) MB"
-            if [ "$size_kb" -gt 26214400 ]; then
-              echo "Target size exceeds 25 GB limit, running cargo clean..."
-              cargo clean
-            fi
-          fi
-
-      # No package format is requested here: the binary is built on Ubuntu, and the Arch package
-      # is assembled in an Arch container, because makepkg only exists on Arch. The binary links
-      # against Ubuntu's glibc, which is older than the glibc of any current Arch system.
-      - name: Build WarpOss
-        working-directory: warp
-        run: script/linux/bundle --channel oss --packages "" --features warp_control_cli
-
-      - name: Package for Arch Linux
+      - name: Build and package WarpOss
         working-directory: warp
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          # makepkg refuses to run as root, so the container builds as a user with the runner's
-          # uid, which keeps the files it writes under target/ removable by later steps.
-          # Bundling runs cargo about, so the runner's Rust installation is mounted at the same
-          # path; its binaries run on Arch because Arch's glibc is newer than Ubuntu's.
-          docker run --rm -v "$PWD:/work" -w /work -e VERSION -e RUNNER_UID="$(id -u)" \
-            -v "$CARGO_HOME:$CARGO_HOME" -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
-            -e CARGO_HOME \
-            archlinux:base-devel bash -euxc '
-              pacman -Syu --noconfirm sudo cargo
-              useradd -m -u "$RUNNER_UID" builder
-              echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-              # bundle_arch archives the staged files with tar, which would record the builder
-              # uid as their owner, and that uid belongs to no user on the machines that install
-              # the package. A tar wrapper makes the archive, and so the package, owned by root. The options
-              # follow the arguments because bundle_arch passes old-style mode letters first.
-              printf "#!/bin/sh\nexec /usr/bin/tar \"\$@\" --owner=0 --group=0 --numeric-owner\n" \
-                > /usr/local/bin/tar
-              chmod +x /usr/local/bin/tar
-              # bundle_arch passes --noconfirm to makepkg when it sees GITHUB_ACTIONS; its
-              # GITHUB_OUTPUT writes are discarded.
-              sudo -u builder env GITHUB_ACTIONS=true GITHUB_OUTPUT=/dev/null \
-                CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$HOST_HOME/.rustup" \
-                PATH="$CARGO_HOME/bin:$HOST_HOME/.cargo/bin:$PATH" \
-                SETTINGS_SCHEMA_SOURCE=/work/target/release-lto/settings_schema.json \
-                script/linux/bundle --skip-build --channel oss --packages arch --release-tag "$VERSION"
-            '
-          cd target/release-lto/bundle/linux
-          ls -l
-          package=$(ls warp-terminal-oss-*.pkg.tar.zst)
-          # Fail the build if any packaged file is not owned by root.
-          ! tar --zstd -tvf "$package" | awk '$2 != "root/root"' | grep -q .
-          sha256sum "$package" > "$package.sha256"
+          PLATFORM: ${{ matrix.platform }}
+          # Container caches are separate from the native Arch cargo home.
+          WARPOSS_CACHE_DIR: /home/yurun/actions-runner/warp/ubuntu-cache
+        run: script/linux/bundle_oss "$PLATFORM" "$VERSION"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
         with:
-          name: warposs-linux
+          name: warposs-linux-${{ matrix.platform }}
           path: |
-            warp/target/release-lto/bundle/linux/warp-terminal-oss-*.pkg.tar.zst
-            warp/target/release-lto/bundle/linux/warp-terminal-oss-*.pkg.tar.zst.sha256
+            warp/${{ matrix.target }}/release-lto/bundle/linux/${{ matrix.archive }}
+            warp/${{ matrix.target }}/release-lto/bundle/linux/${{ matrix.archive }}.sha256
           if-no-files-found: error
 
   publish:
@@ -423,7 +353,7 @@ jobs:
     # other platform to have produced artifacts.
     if: >-
       always() && needs.prepare.result == 'success' &&
-      (needs.macos.result == 'success' || needs.linux.result == 'success')
+      (needs.macos.result == 'success' || needs.linux.result == 'success' || needs.linux.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -451,6 +381,16 @@ jobs:
           pattern: warposs-*
           path: artifacts
           merge-multiple: true
+
+      # A matrix is marked failed even when one distribution succeeded. Publish its successful
+      # artifacts, but never push main or create a release when every build failed.
+      - name: Verify available artifacts
+        working-directory: artifacts
+        run: |
+          shopt -s nullglob
+          checksums=(*.sha256)
+          (( ${#checksums[@]} > 0 ))
+          sha256sum --check "${checksums[@]}"
 
       # Merging upstream brings in upstream's workflow file changes, which GITHUB_TOKEN may never
       # push, so the merged main is pushed with the fine-grained sync token. LFS objects stay in
