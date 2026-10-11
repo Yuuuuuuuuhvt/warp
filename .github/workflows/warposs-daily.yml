@@ -10,11 +10,12 @@
 name: WarpOss daily build
 
 on:
-  schedule:
-    # Every six hours: 00:00, 06:00, 12:00 and 18:00 in Asia/Shanghai. The first slot of a day
-    # builds; the later slots are retries that skip once a complete release exists, because hosted
-    # runner outages have cancelled whole runs. Machines install the release at 07:00.
-    - cron: "0 16,22,4,10 * * *"
+  # Triggered from TX by recitativo-warposs-dispatch.timer, which runs `gh workflow run
+  # warposs-daily.yml` at 00:00, 06:00, 12:00 and 18:00 Asia/Shanghai. The 00:00 slot builds;
+  # the later slots are retries that skip once a complete release exists. Machines install the
+  # release at 07:00. There is no schedule trigger: both self-hosted executors live on TX, so
+  # GitHub cron cannot backstop a TX outage, and its hours-long delays can duplicate a
+  # timer-triggered run.
   workflow_dispatch:
     inputs:
       force:
@@ -50,13 +51,14 @@ jobs:
       need_macos: ${{ steps.plan.outputs.need_macos }}
       need_linux: ${{ steps.plan.outputs.need_linux }}
     steps:
-      # A scheduled run does nothing when a release holding both platforms was created since 00:00
-      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a day
-      # whose build failed. Counting from midnight rather than a fixed age keeps the daily build at
-      # 00:00 after a manual run during the day. Manual runs always build.
+      # A run does nothing when a release holding both platforms was created since 00:00
+      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a
+      # day whose build failed. Counting from midnight rather than a fixed age keeps the daily
+      # build at 00:00 after a manual run during the day. A forced run always builds, so the
+      # check is skipped when the force input is set.
       - name: Skip when today already has a complete release
         id: recent
-        if: github.event_name == 'schedule'
+        if: ${{ !inputs.force }}
         run: |
           read -r tag created < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 \
                                     --json tagName,createdAt --jq '.[0] | "\(.tagName) \(.createdAt)"')
