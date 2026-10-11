@@ -90,22 +90,42 @@ sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@VERSION@@#$VERSION#g; s#@@ARCH@@#$ARCH#g" \
     < "$TEMPLATE_DIR/control.template" \
     > "$DEBIAN_DIR/control"
+
+# 自建包必须声明实际链接库的最低版本，避免在旧版 Ubuntu 上误安装。
+if [ "$RELEASE_CHANNEL" = "oss" ]; then
+  dependency_dir=$(mktemp -d)
+  mkdir "$dependency_dir/debian"
+  printf 'Source: %s\n\nPackage: %s\nArchitecture: %s\nDescription: WarpOss dependency metadata\n' \
+      "$PACKAGE_NAME" "$PACKAGE_NAME" "$ARCH" > "$dependency_dir/debian/control"
+  if ! dependencies=$(cd "$dependency_dir" && dpkg-shlibdeps -O -e"$EXECUTABLE_PATH"); then
+    rm -rf "$dependency_dir"
+    exit 1
+  fi
+  rm -rf "$dependency_dir"
+  dependencies="${dependencies#shlibs:Depends=}"
+  sed -i "/^Depends:/s/$/, $dependencies/" "$DEBIAN_DIR/control"
+fi
 sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@BINARY_NAME@@#$BINARY_NAME#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
     < "$TEMPLATE_DIR/postinst.template" \
     > "$DEBIAN_DIR/postinst"
-sed \
-    "s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
-    < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postinst.repo.template" \
-    >> "$DEBIAN_DIR/postinst"
+# OSS 由自建 Release 更新，不登记或删除官方 apt 源。
+if [ "$RELEASE_CHANNEL" != "oss" ]; then
+  sed \
+      "s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
+      < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postinst.repo.template" \
+      >> "$DEBIAN_DIR/postinst"
+fi
 sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g" \
     < "$TEMPLATE_DIR/postrm.template" \
     > "$DEBIAN_DIR/postrm"
-sed \
-    "s#@@REPO_NAME@@#$REPO_NAME#g" \
-    < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postrm.repo.template" \
-    >> "$DEBIAN_DIR/postrm"
+if [ "$RELEASE_CHANNEL" != "oss" ]; then
+  sed \
+      "s#@@REPO_NAME@@#$REPO_NAME#g" \
+      < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postrm.repo.template" \
+      >> "$DEBIAN_DIR/postrm"
+fi
 
 # Make the package scripts executable.
 chmod 755 \

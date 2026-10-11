@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# 自建发行版共用入口；平台参数只从 oss/platforms.json 读取。
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+platform=${1:?Usage: bundle_oss PLATFORM VERSION}
+version=${2:?Usage: bundle_oss PLATFORM VERSION}
+config=script/linux/oss/platforms.json
+profile=$(jq -ce --arg platform "$platform" '.[$platform]' "$config")
+target=$(jq -r .target <<< "$profile")
+format=$(jq -r .package <<< "$profile")
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-8}
+export CARGO_TARGET_DIR="$PWD/$target"
+
+# 每个平台只清理自己的可重建编译产物，避免影响其他发行版的缓存。
+mkdir -p "$target"
+if [[ $(du -sk "$target/release-lto" 2>/dev/null | cut -f1 || echo 0) -gt 26214400 ]]; then
+    rm -rf "$target/release-lto"
+fi
+out="$target/release-lto/bundle/linux"
+if [[ -d $out ]]; then
+    find "$out" -maxdepth 1 -type f \
+        \( -name '*.deb' -o -name '*.pkg.tar.zst' -o -name '*.sha256' \) -delete
+fi
+
+if [[ $(jq -r .build <<< "$profile") == container ]]; then
+    image=$(jq -r .image <<< "$profile")
+    rust_version=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+    # 复用执行器已有代理；Docker 预定义代理参数不写入镜像历史。
+    docker build --network host --build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
+        --build-arg "BASE_IMAGE=$image" --build-arg "RUST_VERSION=$rust_version" \
+        -t warposs-ubuntu-builder script/linux/oss
+    cache=${WARPOSS_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/warposs-ubuntu}
+    mkdir -p "$cache/cargo" "$cache/home" "$target"
+    git_mount=()
+    if [[ -f .git ]]; then
+        git_common=$(git rev-parse --path-format=absolute --git-common-dir)
+        git_mount=(-v "$git_common:$git_common:ro")
+    fi
+    # 宿主的 Rust 工具可能要求更新的 glibc，因此只使用容器内的工具链。
+    docker run --rm --network host --user "$(id -u):$(id -g)" \
+        -e http_proxy -e https_proxy -e no_proxy \
+        -v "$PWD:/work" -w /work -v "$cache:/cache" "${git_mount[@]}" \
+        -e HOME=/cache/home -e CARGO_HOME=/cache/cargo \
+        -e PATH=/cache/cargo/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        -e "CARGO_TARGET_DIR=/work/$target" -e CARGO_BUILD_JOBS \
+        -e "VERSION=$version" -e "FORMAT=$format" \
+        warposs-ubuntu-builder bash -euc '
+            git config --global --replace-all safe.directory /work
+            script/install_cargo_release_deps --no-build-deps
+            script/linux/bundle --channel oss --packages "$FORMAT" --features warp_control_cli --release-tag "$VERSION"
+            output="$CARGO_TARGET_DIR/release-lto/bundle/linux"
+            package="$output/warp-terminal-oss_${VERSION}_amd64.deb"
+            test "$(dpkg-deb -f "$package" Package)" = warp-terminal-oss
+            test "$(dpkg-deb -f "$package" Architecture)" = amd64
+            test "$(dpkg-deb -f "$package" Version)" = "$VERSION"
+            dpkg-deb -c "$package" | awk '\''$2 != "root/root" { bad=1 } END { exit bad }'\''
+            controls=$(mktemp -d)
+            trap '\''rm -rf "$controls"'\'' EXIT
+            dpkg-deb -e "$package" "$controls"
+            if grep -Eq "releases.warp.dev|trustedparts|sourceparts" "$controls/postinst" "$controls/postrm"; then exit 1; fi
+            ldd "$CARGO_TARGET_DIR/release-lto/warp-oss" > "$output/ldd.txt"
+            if grep -q "not found" "$output/ldd.txt"; then cat "$output/ldd.txt"; exit 1; fi
+        '
+else
+    export PATH="$HOME/.cargo/bin:$PATH"
+    rustup toolchain install
+    script/install_cargo_release_deps --no-build-deps
+    script/linux/bundle --channel oss --packages "" --features warp_control_cli
+    image=$(jq -r .packaging_image <<< "$profile")
+    docker run --rm -v "$PWD:/work" -w /work -e "VERSION=$version" -e RUNNER_UID="$(id -u)" \
+        -v "${CARGO_HOME:-$HOME/.cargo}:${CARGO_HOME:-$HOME/.cargo}" \
+        -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
+        -e HOST_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" "$image" bash -euxc '
+            pacman -Syu --noconfirm sudo cargo
+            useradd -m -u "$RUNNER_UID" builder
+            echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+            printf "#!/bin/sh\nexec /usr/bin/tar \"\$@\" --owner=0 --group=0 --numeric-owner\n" > /usr/local/bin/tar
+            chmod +x /usr/local/bin/tar
+            sudo -u builder env GITHUB_ACTIONS=true GITHUB_OUTPUT=/dev/null \
+                CARGO_HOME="$HOST_CARGO_HOME" RUSTUP_HOME="$HOST_HOME/.rustup" \
+                PATH="$HOST_CARGO_HOME/bin:$HOST_HOME/.cargo/bin:$PATH" \
+                SETTINGS_SCHEMA_SOURCE=/work/target/release-lto/settings_schema.json \
+                script/linux/bundle --skip-build --channel oss --packages arch --release-tag "$VERSION"
+        '
+fi
+out="$target/release-lto/bundle/linux"
+pattern=$(jq -r .archive <<< "$profile")
+mapfile -t packages < <(find "$out" -maxdepth 1 -name "$pattern" -type f)
+[[ ${#packages[@]} == 1 ]] || { echo "Expected one package, found ${#packages[@]}" >&2; exit 1; }
+package=${packages[0]}
+if [[ $format == arch ]]; then
+    tar --zstd -tvf "$package" | awk '$2 != "root/root" { bad=1 } END { exit bad }'
+fi
+(cd "$out" && sha256sum "$(basename "$package")" > "$(basename "$package").sha256")

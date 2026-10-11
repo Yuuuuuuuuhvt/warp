@@ -78,3 +78,21 @@ create
 inst 123
 EOF
 cmp "$temp_dir/expected-forwarded-args" "$temp_dir/forwarded-args"
+
+# Ubuntu 上同时核验真实 deb 元数据，使用系统 ELF 避免为打包检查编译整个应用。
+if command -v dpkg-shlibdeps >/dev/null && command -v fakeroot >/dev/null; then
+  deb_profile="$temp_dir/deb-target/release-lto"
+  mkdir -p "$deb_profile"
+  cp /bin/true "$deb_profile/warp-oss"
+  CARGO_TARGET_DIR="$temp_dir/deb-target" NO_LICENSES=1 SKIP_SETTINGS_SCHEMA=1 \
+    "$workspace_root/script/linux/bundle" --skip-build --channel oss --packages deb --release-tag 1.0
+  package=$(find "$deb_profile/bundle/linux" -name '*.deb')
+  test "$(dpkg-deb -f "$package" Package)" = warp-terminal-oss
+  dpkg-deb -f "$package" Depends | grep -q 'libc6 (>= '
+  dpkg-deb -e "$package" "$temp_dir/deb-control"
+  if grep -Eq 'releases.warp.dev|trustedparts|sourceparts' \
+      "$temp_dir/deb-control/postinst" "$temp_dir/deb-control/postrm"; then
+    echo 'OSS package must not manage the official apt repository' >&2
+    exit 1
+  fi
+fi
