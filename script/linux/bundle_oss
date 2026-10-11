@@ -69,6 +69,7 @@ else
     image=$(jq -r .packaging_image <<< "$profile")
     docker run --rm -v "$PWD:/work" -w /work -e "VERSION=$version" -e RUNNER_UID="$(id -u)" \
         -v "${CARGO_HOME:-$HOME/.cargo}:${CARGO_HOME:-$HOME/.cargo}" \
+        -v "$HOME/.cargo/bin:$HOME/.cargo/bin:ro" \
         -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
         -e HOST_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" "$image" bash -euxc '
             pacman -Syu --noconfirm sudo cargo
