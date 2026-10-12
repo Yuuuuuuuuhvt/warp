@@ -24072,6 +24072,7 @@ impl TerminalView {
         };
 
         let request = RunAgentsRequest {
+            metadata: Default::default(),
             summary: summary.clone(),
             base_prompt: "Shared instructions for every child agent.".to_owned(),
             skills: vec![],
@@ -24081,6 +24082,7 @@ impl TerminalView {
             agent_run_configs: agent_names
                 .into_iter()
                 .map(|name| RunAgentsAgentRunConfig {
+                    metadata: Default::default(),
                     name,
                     prompt: "Do the work.".to_owned(),
                     title: String::new(),
@@ -24107,7 +24109,7 @@ impl TerminalView {
                     AIAgentAction {
                         id: AIAgentActionId::from("fake-run-agents-action-id".to_owned()),
                         task_id: TaskId::new("fake-task-id".to_owned()),
-                        action: AIAgentActionType::RunAgents(request),
+                        action: AIAgentActionType::RunAgents(Box::new(request)),
                         requires_result: true,
                     },
                 ),
