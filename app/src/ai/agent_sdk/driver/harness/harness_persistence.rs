@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::{Context, Error, Result, anyhow};
 use warp_errors::report_if_error;
@@ -40,8 +41,9 @@ impl PersistenceOutcome {
         }
     }
 
-    pub(super) fn block_only(result: Result<()>) -> Self {
-        // Harnesses without transcript persistence can still report their block-save result.
+    pub(super) fn without_transcript(result: Result<()>) -> Self {
+        // Harnesses without transcript persistence still report the result of their other
+        // artifact (a block snapshot or native conversation data).
         Self {
             result,
             uploaded_usage: None,
@@ -63,6 +65,12 @@ pub(crate) struct HarnessPersistence {
 }
 
 impl HarnessPersistence {
+    /// Overrides how long a save request is held for coalescing before it runs.
+    pub(super) fn with_save_debounce(mut self, interval: Duration) -> Self {
+        self.saves = SaveCoordinator::new(interval);
+        self
+    }
+
     pub(crate) fn initialize(
         &self,
         client: Arc<ServerApi>,
