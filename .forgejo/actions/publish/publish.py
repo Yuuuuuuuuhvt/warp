@@ -46,6 +46,8 @@ def main():
         raise RuntimeError("Invalid release tag")
     directory = Path(os.environ["RELEASE_DIRECTORY"])
     files = {p.name: p for p in directory.rglob("*") if p.is_file()}
+    if any(not (n.endswith((".tar.gz", ".zip", ".deb", ".pkg.tar.zst", ".sha256")) or n == "SHA256SUMS") for n in files):
+        raise RuntimeError("Unexpected file in release artifact directory")
     archives = [n for n in files if not n.endswith(".sha256") and n != "SHA256SUMS"]
     if not archives or any(n + ".sha256" not in files for n in archives):
         raise RuntimeError("Every release asset needs a checksum")
@@ -102,8 +104,8 @@ def main():
                 subprocess.run(["curl", "--silent", "--show-error", "--fail", "--max-time", "600", "--config", cfg.name, *args],
                                check=True, stdout=subprocess.DEVNULL)
         releases.append((base, token, prefix, release["id"], release.get("draft")))
-    # 两侧所有附件完成后才解除草稿，避免 latest 指向只有一个平台的发布。
-    for base, token, prefix, release_id, draft in releases:
+    # 两侧所有附件完成后先公开回退，再公开主仓，主仓 latest 不能先于回退可用。
+    for base, token, prefix, release_id, draft in reversed(releases):
         if draft:
             req = urllib.request.Request(base + "/releases/" + str(release_id), method="PATCH", data=b'{"draft":false}',
                     headers={"Authorization": prefix + token, "Content-Type": "application/json"})
