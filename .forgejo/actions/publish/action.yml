@@ -1,0 +1,23 @@
+name: Publish verified assets to Forgejo and GitHub fallback
+inputs:
+  repository:
+    required: true
+  tag:
+    required: true
+  commit:
+    required: true
+  directory:
+    default: dist
+  prerelease:
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RELEASE_REPOSITORY: ${{ inputs.repository }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        RELEASE_COMMIT: ${{ inputs.commit }}
+        RELEASE_DIRECTORY: ${{ inputs.directory }}
+        RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+      run: python3 '${{ github.action_path }}/publish.py'

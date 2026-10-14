@@ -1,0 +1,378 @@
+# Merges the public upstream into the private Forgejo main and verifies all platform assets.
+# Forgejo is primary; the same verified release attachments are exported to GitHub.
+#
+# Job order: prepare -> macos and linux in parallel -> publish. The build jobs only upload
+# artifacts. The publish job is the only one that pushes main or touches the release, and it runs
+# when at least one platform built, so a failure on one platform does not block the other. A merge
+# conflict stops the run in prepare, before anything is built or pushed. main therefore only ever
+# points at a commit that has a release, and machines keep the previous release on failure.
+# A platform missing from an existing release is built on the next run and added to that release.
+name: WarpOss daily build
+
+on:
+  # Triggered from TX by recitativo-warposs-dispatch.timer, which calls the Forgejo workflow API at 00:00, 06:00, 12:00 and 18:00 Asia/Shanghai. The 00:00 slot builds;
+  # the later slots are retries that skip once a complete release exists. Machines install the
+  # release at 07:00. There is no schedule trigger: both self-hosted executors live on TX, so
+  # a server cron cannot backstop a TX outage, and its hours-long delays can duplicate a
+  # timer-triggered run.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build all platforms even if the merged main already has them in a release
+        type: boolean
+        default: false
+
+      validation:
+        description: Build candidates without pushing main or publishing releases
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warposs-daily
+  cancel-in-progress: false
+
+env:
+  # Asset names are the contract with scripts/update/warp_oss_update.py in the recitativo repository.
+  MACOS_ASSET: WarpOss.zip
+
+jobs:
+  prepare:
+    runs-on: tx-linux
+    timeout-minutes: 30
+    env:
+      READ_TOKEN: ${{ secrets.DOWNLOAD_READ_TOKEN }}
+    outputs:
+      main: ${{ steps.pins.outputs.main }}
+      upstream: ${{ steps.pins.outputs.upstream }}
+      date: ${{ steps.pins.outputs.date }}
+      head: ${{ steps.merge.outputs.head }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      need_macos: ${{ steps.plan.outputs.need_macos }}
+      need_linux: ${{ steps.plan.outputs.need_linux }}
+      linux_matrix: ${{ steps.plan.outputs.linux_matrix }}
+    steps:
+      # The two parents and the date are fixed here so that every later job rebuilds the same merge
+      # commit even if upstream master or main moves while the builds run.
+      - name: Pin merge inputs
+        id: pins
+        run: |
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://git.luonto.me/.extraheader
+          export GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'yurun:%s' "$READ_TOKEN" | base64 -w0)"
+          echo "main=$(git ls-remote "https://git.luonto.me/yurun/warp.git" refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git ls-remote https://github.com/warpdotdev/warp.git refs/heads/master | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out merge action
+        uses: https://github.com/actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .forgejo/actions
+          persist-credentials: false
+
+      - name: Merge upstream master
+        id: merge
+        uses: ./ci/.forgejo/actions/merge-upstream
+        with:
+          read-token: ${{ secrets.DOWNLOAD_READ_TOKEN }}
+          main: ${{ steps.pins.outputs.main }}
+          upstream: ${{ steps.pins.outputs.upstream }}
+          date: ${{ steps.pins.outputs.date }}
+          message: "Merge upstream master [skip ci]"
+
+      # A run does nothing when a release holding all platforms was created since 00:00
+      # Asia/Shanghai today, so the 00:00 slot always builds and the later slots only retry a
+      # day whose build failed. Counting from midnight rather than a fixed age keeps the daily
+      # build at 00:00 after a manual run during the day. A forced run always builds, so the
+      # check is skipped when the force input is set.
+      - name: Plan Forgejo builds
+        id: plan
+        working-directory: warp
+        env:
+          HEAD: ${{ steps.merge.outputs.head }}
+          DATE: ${{ steps.pins.outputs.date }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          python3 ../ci/.forgejo/actions/publish/plan.py
+
+  macos:
+    needs: prepare
+    if: needs.prepare.outputs.need_macos == 'true'
+    runs-on: tx-macvm
+    timeout-minutes: 345
+    env:
+      CARGO_BUILD_JOBS: 8
+      SIGNING_IDENTITY: WarpOss Local Code Signing
+      # Root certificate hash in the designated requirement; it must stay stable so macOS keeps
+      # the permissions it granted to earlier builds.
+      SIGNING_ROOT_SHA1: fb0d3d71554fa3f88f60a503366754b5dbdaa786
+    steps:
+      - name: Check out merge action
+        uses: https://github.com/actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .forgejo/actions
+          persist-credentials: false
+
+      # The merge action's checkout now keeps target across runs (clean: false), so remove
+      # every other untracked file the previous run left behind before the merge: a leftover
+      # could otherwise block the merge if upstream adds a file at the same path. The guard
+      # covers a fresh executor where the checkout does not exist yet.
+      - name: Clean source tree except target
+        run: |
+          if [ -d warp/.git ]; then
+            git -C warp clean -ffdx -e target/
+          fi
+
+      - name: Merge upstream master
+        uses: ./ci/.forgejo/actions/merge-upstream
+        with:
+          read-token: ${{ secrets.DOWNLOAD_READ_TOKEN }}
+          main: ${{ needs.prepare.outputs.main }}
+          upstream: ${{ needs.prepare.outputs.upstream }}
+          date: ${{ needs.prepare.outputs.date }}
+          expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
+
+      # The embedded input classifier models are Git LFS objects. They come from upstream's LFS
+      # storage so the daily build does not spend the fork's LFS bandwidth quota.
+      - name: Fetch LFS models
+        working-directory: warp
+        run: |
+          git lfs install --local
+          git lfs fetch upstream --include="crates/input_classifier/models/**"
+          git lfs checkout
+
+      - name: Install toolchains
+        working-directory: warp
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # Installs the toolchain pinned by rust-toolchain.toml.
+          rustup toolchain install
+          rustup target add aarch64-apple-darwin
+          script/install_cargo_bundle
+          script/install_cargo_release_deps --no-build-deps
+
+      # Clean target if it exceeds the disk budget, so artifacts kept between runs cannot grow
+      # without bound. One full build leaves ~24.5 GB of target (measured 2026-10-10: debug test
+      # binaries 12.2 GB, aarch64-apple-darwin 8.1 GB, host release-lto 4.2 GB) on a 128 GB VM
+      # disk that then has ~35 GB free. The 30 GB limit (31457280 KB) is one full build plus
+      # ~20% headroom for dependency growth and still leaves ~29 GB free for the system. A Rust
+      # toolchain upgrade rebuilds every crate beside the old artifacts, so a single build can
+      # add up to one more full build's worth before this check cleans on the following run;
+      # free space stays >= 5 GB even in that case.
+      - name: Check build cache size
+        working-directory: warp
+        run: |
+          if [ -d target ]; then
+            size_kb=$(du -sk target | cut -f1)
+            echo "Current target size: $((size_kb / 1024)) MB"
+            if [ "$size_kb" -gt 31457280 ]; then
+              echo "Target size exceeds 30 GB limit, running cargo clean..."
+              cargo clean
+            fi
+          fi
+
+      - name: Test patched behaviour
+        working-directory: warp
+        env:
+          WARP_LOCAL_SKIP_METAL: "1"
+          RUST_TEST_THREADS: "1"
+        run: |
+          if [ '${{ inputs.validation }}' = true ]; then
+            cargo check -p warp --features warp_control_cli --all-targets
+          else
+            cargo test -p warp --features warp_control_cli --lib -- workspace:: uri:: local_control::
+            cargo test -p local_control
+          fi
+
+      - name: Build WarpOss
+        working-directory: warp
+        # warp-agents drives WarpOss through local control (warpctrl), which upstream enables only
+        # on the dev channel. The Scripting setting still defaults to off on each machine.
+        run: |
+          export SETTINGS_SCHEMA_SOURCE="$HOME/.local/share/warp/settings_schema.json"
+          ./script/macos/bundle --channel oss --arch aarch64 --nosign --features warp_control_cli
+
+      - name: Sign WarpOss
+        working-directory: warp
+        env:
+          P12_BASE64: ${{ secrets.WARP_CODESIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.WARP_CODESIGN_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/warposs-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "$P12_BASE64" | base64 -d > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/signing.p12"
+          app=target/release-lto/bundle/osx/WarpOss.app
+          codesign --force --deep --options runtime --keychain "$keychain" --sign "$SIGNING_IDENTITY" \
+            --entitlements script/Debug-Entitlements.plist "$app"
+          codesign --verify --deep --strict "$app"
+          codesign -d -r- "$app" 2>&1 | grep -q "certificate root = H\"$SIGNING_ROOT_SHA1\""
+          security delete-keychain "$keychain"
+
+      - name: Package WarpOss
+        working-directory: warp/target/release-lto/bundle/osx
+        run: |
+          ditto -c -k --keepParent WarpOss.app "$MACOS_ASSET"
+          shasum -a 256 "$MACOS_ASSET" > "$MACOS_ASSET.sha256"
+
+      - name: Upload artifacts
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: warposs-macos
+          path: |
+            warp/target/release-lto/bundle/osx/WarpOss.zip
+            warp/target/release-lto/bundle/osx/WarpOss.zip.sha256
+          if-no-files-found: error
+
+  linux:
+    needs: prepare
+    if: needs.prepare.outputs.need_linux == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.linux_matrix) }}
+    runs-on: tx-linux-host
+    timeout-minutes: 345
+    env:
+      CARGO_BUILD_JOBS: 8
+      # A dedicated cargo home keeps this pipeline's registry and git dependency caches out of
+      # the shared ~/.cargo: builds of other repositories on this machine, such as aria, end
+      # with cargo's automatic cache garbage collection, which has deleted the shared git
+      # dependency databases and forced a full refetch on the next run of this workflow. The
+      # directory sits in this runner's own root, away from other runners.
+      CARGO_HOME: /var/lib/forgejo-runner/warp/cargo-home
+    steps:
+      - name: Check out merge action
+        uses: https://github.com/actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .forgejo/actions
+          persist-credentials: false
+
+      # The merge action's checkout now keeps target across runs (clean: false), so remove
+      # every other untracked file the previous run left behind before the merge: a leftover
+      # could otherwise block the merge if upstream adds a file at the same path. The guard
+      # covers a fresh executor where the checkout does not exist yet.
+      - name: Clean source tree except target
+        run: |
+          if [ -d warp/.git ]; then
+            git -C warp clean -ffdx -e target/
+          fi
+
+      - name: Merge upstream master
+        uses: ./ci/.forgejo/actions/merge-upstream
+        with:
+          read-token: ${{ secrets.DOWNLOAD_READ_TOKEN }}
+          main: ${{ needs.prepare.outputs.main }}
+          upstream: ${{ needs.prepare.outputs.upstream }}
+          date: ${{ needs.prepare.outputs.date }}
+          expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
+
+      - name: Fetch LFS models
+        working-directory: warp
+        run: |
+          git lfs install --local
+          git lfs fetch upstream --include="crates/input_classifier/models/**"
+          git lfs checkout
+
+      - name: Build and package WarpOss
+        working-directory: warp
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          # Container caches are separate from the native Arch cargo home.
+          WARPOSS_CACHE_DIR: /var/lib/forgejo-runner/warp/ubuntu-cache
+        run: script/linux/bundle_oss "$PLATFORM" "$VERSION"
+
+      - name: Upload artifacts
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: warposs-linux-${{ matrix.platform }}
+          path: |
+            warp/${{ matrix.target }}/release-lto/bundle/linux/${{ matrix.archive }}
+            warp/${{ matrix.target }}/release-lto/bundle/linux/${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, macos, linux]
+    # always() lets this job run when one platform failed or was skipped; it still requires the
+    # other platform to have produced artifacts.
+    if: >-
+      always() && needs.prepare.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
+      (needs.linux.result == 'success' || needs.linux.result == 'skipped') &&
+      (needs.macos.result == 'success' || needs.linux.result == 'success')
+    runs-on: tx-linux
+    timeout-minutes: 30
+    env:
+      READ_TOKEN: ${{ secrets.RELEASE_WRITE_TOKEN }}
+    steps:
+      - name: Check out merge action
+        uses: https://github.com/actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .forgejo/actions
+          persist-credentials: false
+
+      - name: Merge upstream master
+        uses: ./ci/.forgejo/actions/merge-upstream
+        with:
+          read-token: ${{ secrets.RELEASE_WRITE_TOKEN }}
+          main: ${{ needs.prepare.outputs.main }}
+          upstream: ${{ needs.prepare.outputs.upstream }}
+          date: ${{ needs.prepare.outputs.date }}
+          expected-head: ${{ needs.prepare.outputs.head }}
+          message: "Merge upstream master [skip ci]"
+
+      - name: Download artifacts
+        uses: https://code.forgejo.org/forgejo/download-artifact@v4
+        with:
+          pattern: warposs-*
+          path: artifacts
+          merge-multiple: true
+
+      # A matrix is marked failed even when one distribution succeeded. Publish its successful
+      # artifacts, but never push main or create a release when every build failed.
+      - name: Fetch already verified platforms for the same tag
+        env:
+          RELEASE_WRITE_TOKEN: ${{ secrets.RELEASE_WRITE_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: python3 ci/.forgejo/actions/publish/fetch_existing.py
+
+      - name: Verify available artifacts
+        working-directory: artifacts
+        run: |
+          shopt -s nullglob
+          checksums=(*.sha256)
+          (( ${#checksums[@]} > 0 ))
+          sha256sum --check "${checksums[@]}"
+
+      - name: Push merged main
+        if: needs.prepare.outputs.head != needs.prepare.outputs.main && inputs.validation != true
+        working-directory: warp
+        env:
+          GIT_LFS_SKIP_PUSH: '1'
+        run: git push origin HEAD:main
+      - name: Publish verified multi-platform release
+        if: inputs.validation != true
+        uses: ./ci/.forgejo/actions/publish
+        env:
+          RELEASE_WRITE_TOKEN: ${{ secrets.RELEASE_WRITE_TOKEN }}
+          GITHUB_RELEASE_SYNC_TOKEN: ${{ secrets.GH_RELEASE_SYNC_TOKEN }}
+        with:
+          repository: warp
+          tag: ${{ needs.prepare.outputs.tag }}
+          commit: ${{ needs.prepare.outputs.head }}
+          directory: artifacts
