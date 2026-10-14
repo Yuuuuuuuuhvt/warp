@@ -67,12 +67,18 @@ else
     script/install_cargo_release_deps --no-build-deps
     script/linux/bundle --channel oss --packages "" --features warp_control_cli
     image=$(jq -r .packaging_image <<< "$profile")
-    docker run --rm -v "$PWD:/work" -w /work -e "VERSION=$version" -e RUNNER_UID="$(id -u)" \
+    docker run --rm --network host -e http_proxy -e https_proxy -e no_proxy \
+        -v "$PWD:/work" -w /work -e "VERSION=$version" -e RUNNER_UID="$(id -u)" \
         -v "${CARGO_HOME:-$HOME/.cargo}:${CARGO_HOME:-$HOME/.cargo}" \
         -v "$HOME/.cargo/bin:$HOME/.cargo/bin:ro" \
         -v "$HOME/.rustup:$HOME/.rustup" -e HOST_HOME="$HOME" \
         -e HOST_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" "$image" bash -euxc '
-            pacman -Syu --noconfirm sudo cargo
+            # 容器复用宿主代理，并对镜像站短暂失败进行有限重试；签名校验仍由 pacman 完成。
+            for attempt in 1 2 3; do
+                if pacman -Syu --noconfirm sudo cargo; then break; fi
+                if [[ $attempt == 3 ]]; then exit 1; fi
+                sleep 15
+            done
             useradd -m -u "$RUNNER_UID" builder
             echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
             printf "#!/bin/sh\nexec /usr/bin/tar \"\$@\" --owner=0 --group=0 --numeric-owner\n" > /usr/local/bin/tar
