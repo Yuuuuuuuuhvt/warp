@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # 自建发行版共用入口；平台参数只从 oss/platforms.json 读取。
 set -euo pipefail
+# libcurl 的代理变量使用小写；Runner 配置可提供大写变量，保留已有小写覆盖值。
+export http_proxy="${http_proxy:-${HTTP_PROXY:-}}"
+export https_proxy="${https_proxy:-${HTTPS_PROXY:-}}"
+export no_proxy="${no_proxy:-${NO_PROXY:-}}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 platform=${1:?Usage: bundle_oss PLATFORM VERSION}
 version=${2:?Usage: bundle_oss PLATFORM VERSION}
