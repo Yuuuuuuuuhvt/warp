@@ -203,6 +203,7 @@ jobs:
           P12_PASSWORD: ${{ secrets.WARP_CODESIGN_P12_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/warposs-signing.keychain-db"
+          trap 'rm -f "$RUNNER_TEMP/signing.p12"; security delete-keychain "$keychain" >/dev/null 2>&1 || true' EXIT
           keychain_password=$(openssl rand -hex 24)
           echo "$P12_BASE64" | base64 -d > "$RUNNER_TEMP/signing.p12"
           security create-keychain -p "$keychain_password" "$keychain"
