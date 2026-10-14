@@ -1,12 +1,10 @@
 # Merges the public upstream into the private Forgejo main and verifies all platform assets.
 # Forgejo is primary; the same verified release attachments are exported to GitHub.
 #
-# Job order: prepare -> macos and linux in parallel -> publish. The build jobs only upload
-# artifacts. The publish job is the only one that pushes main or touches the release, and it runs
-# when at least one platform built, so a failure on one platform does not block the other. A merge
-# conflict stops the run in prepare, before anything is built or pushed. main therefore only ever
-# points at a commit that has a release, and machines keep the previous release on failure.
-# A platform missing from an existing release is built on the next run and added to that release.
+# Job order: prepare -> macos and both Linux distributions -> publish. Every required platform
+# must succeed or already have verified artifacts for the same tag. The complete set is checked
+# before pushing main; Forgejo and GitHub attachments are uploaded before either draft is opened.
+# A failed build retains the previous release and leaves its validation artifacts available.
 name: WarpOss daily build
 
 on:
@@ -307,8 +305,8 @@ jobs:
 
   publish:
     needs: [prepare, macos, linux]
-    # always() lets this job run when one platform failed or was skipped; it still requires the
-    # other platform to have produced artifacts.
+    # A platform can be skipped when its artifacts already exist for this same tag. A failed
+    # platform stops publication, while always() allows the explicitly skipped jobs.
     if: >-
       always() && needs.prepare.result == 'success' &&
       (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
@@ -343,8 +341,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      # A matrix is marked failed even when one distribution succeeded. Publish its successful
-      # artifacts, but never push main or create a release when every build failed.
+      # Reuse only verified artifacts for this exact tag, then check the complete platform set.
       - name: Fetch already verified platforms for the same tag
         env:
           RELEASE_WRITE_TOKEN: ${{ secrets.RELEASE_WRITE_TOKEN }}
@@ -359,6 +356,11 @@ jobs:
           (( ${#checksums[@]} > 0 ))
           sha256sum --check "${checksums[@]}"
 
+      - name: Verify complete platform set before changing main
+        env:
+          RELEASE_REPOSITORY: warp
+          RELEASE_DIRECTORY: artifacts
+        run: python3 ci/.forgejo/actions/publish/publish.py --check
       - name: Push merged main
         if: needs.prepare.outputs.head != needs.prepare.outputs.main && inputs.validation != true
         working-directory: warp

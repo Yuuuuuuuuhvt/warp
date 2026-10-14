@@ -37,15 +37,15 @@ def digest(path):
     return h.hexdigest()
 
 
-def main():
-    name = os.environ["RELEASE_REPOSITORY"].rsplit("/", 1)[-1]
+def verified_files(name, directory):
+    """完整平台与校验和核对可在推送 main 之前执行，不依赖发布凭据。"""
     if name not in ALLOWED:
         raise RuntimeError("Repository is outside the release allowlist")
-    tag = os.environ["RELEASE_TAG"]
-    if not tag or "/" in tag:
-        raise RuntimeError("Invalid release tag")
-    directory = Path(os.environ["RELEASE_DIRECTORY"])
-    files = {p.name: p for p in directory.rglob("*") if p.is_file()}
+    directory = Path(directory)
+    paths = [p for p in directory.rglob("*") if p.is_file()]
+    if any(p.is_symlink() for p in paths) or len({p.name for p in paths}) != len(paths):
+        raise RuntimeError("Release artifacts contain symbolic links or duplicate filenames")
+    files = {p.name: p for p in paths}
     if any(not (n.endswith((".tar.gz", ".zip", ".deb", ".pkg.tar.zst", ".sha256")) or n == "SHA256SUMS") for n in files):
         raise RuntimeError("Unexpected file in release artifact directory")
     archives = [n for n in files if not n.endswith(".sha256") and n != "SHA256SUMS"]
@@ -60,6 +60,15 @@ def main():
                 "solfeggio": [".zip", ".deb", ".pkg.tar.zst"]}[name]
     if any(not any(n.endswith(suffix) for n in archives) for suffix in expected):
         raise RuntimeError("Release is missing a required platform")
+    return files
+
+
+def main():
+    name = os.environ["RELEASE_REPOSITORY"].rsplit("/", 1)[-1]
+    tag = os.environ["RELEASE_TAG"]
+    if not tag or "/" in tag:
+        raise RuntimeError("Invalid release tag")
+    files = verified_files(name, os.environ["RELEASE_DIRECTORY"])
     opener = urllib.request.build_opener(Redirect())
     providers = [(FORGEJO + "/api/v1/repos/yurun/" + name, os.environ["RELEASE_WRITE_TOKEN"], "token "),
                  (GITHUB + "/repos/Yuuuuuuuuhvt/" + name, os.environ["GITHUB_RELEASE_SYNC_TOKEN"], "Bearer ")]
@@ -115,4 +124,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    if args.check:
+        files = verified_files(os.environ["RELEASE_REPOSITORY"], os.environ["RELEASE_DIRECTORY"])
+        print("Verified complete platform set: " + str(len(files)) + " files")
+    else:
+        main()

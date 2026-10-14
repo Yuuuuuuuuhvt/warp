@@ -59,4 +59,14 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(patches,[publish.GITHUB+'/repos/Yuuuuuuuuhvt/fiato/releases/1'])
 
 
+    def test_duplicate_artifact_names_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            for name in ["one", "two"]:
+                (root/name).mkdir()
+                (root/name/"WarpOss.zip").write_bytes(name.encode())
+            with self.assertRaisesRegex(RuntimeError,"duplicate"):
+                publish.verified_files("warp",root)
+
+
 if __name__=='__main__':unittest.main()
