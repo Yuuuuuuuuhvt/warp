@@ -1,4 +1,4 @@
-name: Publish verified assets to Forgejo and GitHub fallback
+name: Publish verified assets to Forgejo with optional GitHub fallback
 inputs:
   repository:
     required: true

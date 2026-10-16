@@ -1,4 +1,4 @@
-"""先核对完整平台产物，再发布 Forgejo 与 GitHub 回退附件。"""
+"""先核对完整平台产物，再发布 Forgejo，仅对保留回退的公开分叉发布 GitHub 附件。"""
 
 import hashlib
 import json
@@ -11,6 +11,8 @@ import urllib.parse
 import urllib.request
 
 ALLOWED = {"aria", "fiato", "warp", "solfeggio"}
+# GitHub 原仓库归档后只读，只有仍在 GitHub 维护的公开分叉继续接收回退发布。
+GITHUB_FALLBACK = {"warp"}
 FORGEJO = "https://git.luonto.me"
 GITHUB = "https://api.github.com"
 
@@ -70,8 +72,9 @@ def main():
         raise RuntimeError("Invalid release tag")
     files = verified_files(name, os.environ["RELEASE_DIRECTORY"])
     opener = urllib.request.build_opener(Redirect())
-    providers = [(FORGEJO + "/api/v1/repos/yurun/" + name, os.environ["RELEASE_WRITE_TOKEN"], "token "),
-                 (GITHUB + "/repos/Yuuuuuuuuhvt/" + name, os.environ["GITHUB_RELEASE_SYNC_TOKEN"], "Bearer ")]
+    providers = [(FORGEJO + "/api/v1/repos/yurun/" + name, os.environ["RELEASE_WRITE_TOKEN"], "token ")]
+    if name in GITHUB_FALLBACK:
+        providers.append((GITHUB + "/repos/Yuuuuuuuuhvt/" + name, os.environ["GITHUB_RELEASE_SYNC_TOKEN"], "Bearer "))
     releases = []
     for base, token, prefix in providers:
         def api(path, method="GET", body=None):
@@ -113,14 +116,17 @@ def main():
                 subprocess.run(["curl", "--silent", "--show-error", "--fail", "--max-time", "600", "--config", cfg.name, *args],
                                check=True, stdout=subprocess.DEVNULL)
         releases.append((base, token, prefix, release["id"], release.get("draft")))
-    # 两侧所有附件完成后先公开回退，再公开主仓，主仓 latest 不能先于回退可用。
+    # 目标仓库所有附件完成后按逆序公开发布，存在回退时先公开回退再公开主仓，主仓 latest 不能先于回退可用。
     for base, token, prefix, release_id, draft in reversed(releases):
         if draft:
             req = urllib.request.Request(base + "/releases/" + str(release_id), method="PATCH", data=b'{"draft":false}',
                     headers={"Authorization": prefix + token, "Content-Type": "application/json"})
             with opener.open(req, timeout=60) as response:
                 response.read()
-    print("Verified assets published to Forgejo and GitHub fallback")
+    if name in GITHUB_FALLBACK:
+        print("Verified assets published to Forgejo and GitHub fallback")
+    else:
+        print("Verified assets published to Forgejo")
 
 
 if __name__ == "__main__":

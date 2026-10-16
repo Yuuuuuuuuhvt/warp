@@ -24,15 +24,16 @@ class PublisherTests(unittest.TestCase):
     def test_fallback_failure_keeps_forgejo_draft(self):
         calls=[]
         with tempfile.TemporaryDirectory() as folder:
-            p=Path(folder)/'fanctl-x86_64-unknown-linux-musl.tar.gz'
-            p.write_bytes(b'candidate');p.with_name(p.name+'.sha256').write_text(publish.digest(p))
+            for suffix in ['.zip', '.deb', '.pkg.tar.zst']:
+                p=Path(folder)/('warp'+suffix)
+                p.write_bytes(b'candidate');p.with_name(p.name+'.sha256').write_text(publish.digest(p))
             assets=[{'name':f.name,'digest':'sha256:'+publish.digest(f)} for f in Path(folder).iterdir()]
             class Opener:
                 def open(self,request,timeout):
                     calls.append((request.full_url,request.get_method()))
                     if request.full_url.startswith(publish.GITHUB):raise urllib.error.HTTPError(request.full_url,503,'unavailable',{},None)
                     return io.BytesIO(json.dumps([{'id':1,'tag_name':'v0.1.2','assets':assets,'draft':True}]).encode())
-            env={'RELEASE_REPOSITORY':'fiato','RELEASE_TAG':'v0.1.2','RELEASE_DIRECTORY':folder,'RELEASE_WRITE_TOKEN':'test','GITHUB_RELEASE_SYNC_TOKEN':'test'}
+            env={'RELEASE_REPOSITORY':'warp','RELEASE_TAG':'v0.1.2','RELEASE_DIRECTORY':folder,'RELEASE_WRITE_TOKEN':'test','GITHUB_RELEASE_SYNC_TOKEN':'test'}
             with patch.dict(os.environ,env),patch.object(publish.urllib.request,'build_opener',return_value=Opener()),patch.object(publish.subprocess,'run') as run:
                 with self.assertRaises(urllib.error.HTTPError):publish.main()
                 run.assert_not_called()
@@ -42,9 +43,10 @@ class PublisherTests(unittest.TestCase):
     def test_github_publish_failure_does_not_unlock_primary(self):
         calls=[]
         with tempfile.TemporaryDirectory() as folder:
-            p=Path(folder)/'fanctl-x86_64-unknown-linux-musl.tar.gz'
-            p.write_bytes(b'candidate')
-            p.with_name(p.name+'.sha256').write_text(publish.digest(p))
+            for suffix in ['.zip', '.deb', '.pkg.tar.zst']:
+                p=Path(folder)/('warp'+suffix)
+                p.write_bytes(b'candidate')
+                p.with_name(p.name+'.sha256').write_text(publish.digest(p))
             assets=[{'name':f.name,'digest':'sha256:'+publish.digest(f)} for f in Path(folder).iterdir()]
             class Opener:
                 def open(self,request,timeout):
@@ -52,11 +54,34 @@ class PublisherTests(unittest.TestCase):
                     if request.get_method()=='PATCH':
                         raise urllib.error.HTTPError(request.full_url,503,'unavailable',{},None)
                     return io.BytesIO(json.dumps([{'id':1,'tag_name':'v0.1.2','assets':assets,'draft':True}]).encode())
-            env={'RELEASE_REPOSITORY':'fiato','RELEASE_TAG':'v0.1.2','RELEASE_DIRECTORY':folder,'RELEASE_WRITE_TOKEN':'test','GITHUB_RELEASE_SYNC_TOKEN':'test'}
+            env={'RELEASE_REPOSITORY':'warp','RELEASE_TAG':'v0.1.2','RELEASE_DIRECTORY':folder,'RELEASE_WRITE_TOKEN':'test','GITHUB_RELEASE_SYNC_TOKEN':'test'}
             with patch.dict(os.environ,env),patch.object(publish.urllib.request,'build_opener',return_value=Opener()):
                 with self.assertRaises(urllib.error.HTTPError):publish.main()
             patches=[url for url,method in calls if method=='PATCH']
-            self.assertEqual(patches,[publish.GITHUB+'/repos/Yuuuuuuuuhvt/fiato/releases/1'])
+            self.assertEqual(patches,[publish.GITHUB+'/repos/Yuuuuuuuuhvt/warp/releases/1'])
+
+
+    def test_fiato_without_github_token_publishes_only_to_forgejo(self):
+        calls=[]
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'fanctl-x86_64-unknown-linux-musl.tar.gz'
+            p.write_bytes(b'candidate')
+            p.with_name(p.name+'.sha256').write_text(publish.digest(p))
+            assets=[{'name':f.name,'digest':'sha256:'+publish.digest(f)} for f in Path(folder).iterdir()]
+            class Opener:
+                def open(self,request,timeout):
+                    calls.append((request.full_url,request.get_method(),request.data))
+                    return io.BytesIO(json.dumps([{'id':1,'tag_name':'v0.1.2','assets':assets,'draft':True}]).encode())
+            env={'RELEASE_REPOSITORY':'fiato','RELEASE_TAG':'v0.1.2','RELEASE_DIRECTORY':folder,'RELEASE_WRITE_TOKEN':'test'}
+            clean_env={k:v for k,v in os.environ.items() if k!='GITHUB_RELEASE_SYNC_TOKEN'}
+            clean_env.update(env)
+            with patch.dict(os.environ,clean_env,clear=True),patch.object(publish.urllib.request,'build_opener',return_value=Opener()):
+                publish.main()
+            self.assertTrue(all(not url.startswith(publish.GITHUB) for url,_,_ in calls))
+            patches=[(url,data) for url,method,data in calls if method=='PATCH']
+            self.assertEqual(len(patches),1)
+            self.assertEqual(patches[0][0],publish.FORGEJO+'/api/v1/repos/yurun/fiato/releases/1')
+            self.assertEqual(patches[0][1],b'{"draft":false}')
 
 
     def test_duplicate_artifact_names_are_rejected(self):
